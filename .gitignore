@@ -1,1 +1,4 @@
-SIA/*.nc
+# Ignore large or generated files
+*.pt
+*.nc
+__pycache__/
