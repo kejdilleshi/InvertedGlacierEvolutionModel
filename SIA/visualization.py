@@ -31,7 +31,7 @@ def visualize(Z_surf, time, H_ice, Lx, Ly):
     plt.show()
 
 # Plot loss components
-def plot_loss_components(total_loss_history, data_fidelity_history, regularization_history):
+def plot_loss_components(total_loss_history, data_fidelity_history, regularization_history,name):
     plt.figure(figsize=(10, 6))
     plt.plot(total_loss_history, label='Total Loss', color='b', linewidth=2)
     plt.plot(data_fidelity_history, label='Data Fidelity', color='g', linestyle='--', linewidth=2)
@@ -42,15 +42,15 @@ def plot_loss_components(total_loss_history, data_fidelity_history, regularizati
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig('Loss.png')
+    plt.savefig(name)
 
-def plot_gradient_evolution(total_gradients_history):
+def plot_gradient_evolution(total_gradients_history,name):
     plt.figure(figsize=(10,6))
 # plt.plot(ELA_evolution,label="evolution of ELA",color='b')
     plt.plot(total_gradients_history, label='Evolution of gradients')
     plt.xlabel('Iteration')
     plt.legend()
-    plt.savefig('Gradients.png')
+    plt.savefig(name)
 
 def plot_resulting_ELA(Z_ELA,H_simulated,observed_thk):
     # Convert tensors to NumPy arrays for plotting
