@@ -3,22 +3,22 @@ import torch
 
 
 # # Define a function for the forward computation to use with checkpointing
-def checkpointed_inversion_thicknes(Z_ELA,observed_thk, reg_lambda,glacier_model):
+def checkpointed_inversion_thicknes(precip_tensor, T_ma_lowest,T_mj_lowest,observed_thk, reg_lambda,glacier_model):
     # Perform forward simulation
-    H_simulated = glacier_model(Z_ELA)  # Use the checkpointed glacier model
-    # print('Nb steps: ',it)
+    H_simulated = glacier_model(precip_tensor, T_ma_lowest,T_mj_lowest)
 
     # Compute data fidelity term
-    data_fidelity = torch.mean((H_simulated - observed_thk) ** 2)
+    data_fidelity = torch.mean(torch.abs(H_simulated - observed_thk) ** 2)/torch.norm(observed_thk)
 
-    # Compute smoothness regularization
-    smoothness_x = torch.sum((Z_ELA[:, 1:] - Z_ELA[:, :-1]) ** 2)
-    smoothness_y = torch.sum((Z_ELA[1:, :] - Z_ELA[:-1, :]) ** 2)
-    smoothness_reg = smoothness_x + smoothness_y
+    # # Compute smoothness regularization
+    # smoothness_x = torch.sum((precip_tensor[:, 1:] - precip_tensor[:, :-1]) ** 2)
+    # smoothness_y = torch.sum((precip_tensor[1:, :] - precip_tensor[:-1, :]) ** 2)
+    # smoothness_reg = smoothness_x + smoothness_y
 
-    # Total loss
-    loss = data_fidelity + reg_lambda * smoothness_reg
-    return loss,H_simulated
+    # # Total loss
+    # loss = data_fidelity + reg_lambda * smoothness_reg
+    return data_fidelity,H_simulated
+
 
 # Define a function for the forward computation to use with checkpointing
 def checkpointed_inversion_extent(Z_ELA, observed_thk,glacier_model, threshold=5.0):
