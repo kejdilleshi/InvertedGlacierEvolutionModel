@@ -7,7 +7,6 @@ import torch
 def visualize(Z_surf, time, H_ice, Lx, Ly):
     clear_output(wait=True)  # Clear the previous output in the notebook
     plt.figure(2, figsize=(11, 4), dpi=200)
-
     # Convert tensors to float32 for NumPy compatibility
     Z_surf_np = Z_surf.to(torch.float32).cpu().numpy()
     H_ice_np = H_ice.to(torch.float32).cpu().numpy()
@@ -27,8 +26,10 @@ def visualize(Z_surf, time, H_ice, Lx, Ly):
     plt.title('Ice Thickness at ' + str(int(time)) + ' y')
     plt.xlabel('Distance, km')
     plt.ylabel('Distance, km')
-    # Show the plot
-    plt.show()
+    # Display the plot briefly, then close
+    plt.tight_layout()
+    plt.pause(2)
+    plt.close()
 
 # Plot loss components
 def plot_loss_components(total_loss_history, data_fidelity_history, regularization_history,name):

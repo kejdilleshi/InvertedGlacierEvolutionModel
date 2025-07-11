@@ -1,0 +1,13 @@
+- experiment
+	- make 2 masks for 2 catchemnts
+	- 
+	
+- new things : 
+	- distinguish P and T 
+	- make a cost that might be more aware of the shape of the glacier???
+	- 
+- Use the catalogue to train an emulator...
+- craft a document with experiments: 
+	- invert P and T seperately
+	- invert P and T jointly, make a loss topography map.
+	- structure, transiency of P and T

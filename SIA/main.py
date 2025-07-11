@@ -8,23 +8,30 @@ from visualization.plots import plot_gradient_evolution, plot_loss_components
 def main():
     # 1) Load data
     Z, obs_thk, mask = load_geology("data/geology_200m.nc")
+    T=500
+    t=torch.arange(0,T,5)
+    P_m=1.7
+    P_s=0.5
+    P_evol = P_m - P_s * torch.cos(2 * torch.pi * t / T)
 
     # 2) Instantiate model
 
     rho, g, fd = 910.0, 9.81, 0.25e-16
     Lx, Ly, dx, dy= Z.shape[1]*200, Z.shape[0]*200, 200, 200
-    model = GlacierDynamicsCheckpointed(Z, ttot=80, rho=rho, g=g, fd=fd, Lx=Lx, Ly=Ly, dx=dx, dy=dy, dtmax=1.0,
-                                        device=device, ice_mask=mask) 
+    model = GlacierDynamicsCheckpointed(Z, ttot=T, rho=rho, g=g, fd=fd, Lx=Lx, Ly=Ly, dx=dx, dy=dy, dtmax=1.0,
+                                        device=device) 
 
     # 3) Set up optimizer & initial guesses
-    precip = torch.tensor(2.3, requires_grad=True, device=device)
-    T_ma0 = torch.tensor(4.0, requires_grad=True, device=device)
-    T_mj0 = torch.tensor(16.0, requires_grad=True, device=device)
+    precip = torch.tensor(2.7, requires_grad=False, device=device)
+    # T_ma0 = torch.tensor(4.0, requires_grad=True, device=device)
+    # T_mj0 = torch.tensor(16.0, requires_grad=True, device=device)
 
     # # make obs : 
-    # H_simulated = model(2.0, 9.0,18.0)
+    # H1, H2, H_simulated = model(P_evol, 6,10)
+    # print(f'Volume of the glacier at 60 yrs: {torch.sum(H1)}, 80 years : {torch.sum(H2)} and at the end : {torch.sum(H_simulated)}')
+    exit()
     # torch.save(H_simulated, "Obs_2D.pt")
-    optimizer = torch.optim.Adam([precip, T_ma0, T_mj0], lr=0.1)
+    optimizer = torch.optim.Adam([precip], lr=0.1)
 
     # 4) Inversion loop
     grads, losses, data_hist = [], [], []
