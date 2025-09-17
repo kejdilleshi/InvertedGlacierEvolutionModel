@@ -3,3 +3,4 @@
 *.nc
 __pycache__/
 surflib3D
+*.pth

@@ -1,0 +1,10 @@
+Iter 1: loss=0.01514, precip=2.490, T=8.500
+Iter 2: loss=0.01235, precip=2.455, T=8.500
+Iter 3: loss=0.01033, precip=2.415, T=8.500
+Iter 4: loss=0.00841, precip=2.381, T=8.500
+Iter 5: loss=0.00642, precip=2.342, T=8.500
+Iter 6: loss=0.00447, precip=2.304, T=8.500
+Iter 7: loss=0.00228, precip=2.270, T=8.500
+Iter 8: loss=0.00097, precip=2.241, T=8.500
+Iter 9: loss=0.00148, precip=2.232, T=8.500
+Iter 10: loss=0.00185, precip=2.253, T=8.500

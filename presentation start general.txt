@@ -1,8 +1,0 @@
-- presentation 
-	- start general
-	- use simple words to explain the message
-	- do not improvise, write the presentation
-	- motivate pdd, distinguish temp and precip
-	- focus on ditail like the tanh, dont do this
-	- Experiments, start simple reconstruct T and P, compensation, and then 2 together.
-	

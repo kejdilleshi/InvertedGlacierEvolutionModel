@@ -1,7 +1,8 @@
 import torch
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Force Torch to use GPU:1
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 def print_peak_gpu_memory():
