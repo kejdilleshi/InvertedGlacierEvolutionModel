@@ -23,7 +23,7 @@ def cosine_temperature_series(ttot, t_freq, T_high=9.0, T_low=7.0, device='cpu')
     return mean + amp * torch.cos(theta)
 
 
-def update_smb(
+def update_smb_PDD(
     Z_topo: Tensor,
     precipitation: Tensor | float | None = None,  # annual precip (m w.e./yr) for parametric mode
     T_m_lowest: Tensor | float | None = None,     # mean annual temp at lowest point (°C) for parametric mode
@@ -39,7 +39,7 @@ def update_smb(
     positive_degree_threshold_c: float = 1.0,     # your requested >1°C threshold for PDD
 ) -> Tensor:
     """
-    Compute SMB (m ice eq / year).
+    Compute SMB (m ice eq / year) using Positive Degree Day (PDD) method.
 
     Modes:
       • Daily mode: if P_daily and T_daily are provided -> direct PDD and accumulation from daily data.
@@ -98,6 +98,54 @@ def update_smb(
     smb = (accumulation_wat - ablation_wat) * (rho_w / rho_i)
 
     return smb
+
+
+def update_smb_ELA(
+    Z_topo: Tensor,
+    ELA: Tensor | float,
+    grad_b: Tensor | float,
+    b_max: Tensor | float,
+) -> Tensor:
+    """
+    Compute SMB (m ice eq / year) using simple ELA (Equilibrium Line Altitude) method.
+
+    The SMB is linearly proportional to the elevation difference from the ELA,
+    capped at a maximum accumulation rate.
+
+    SMB = min(grad_b * (Z - ELA), b_max)
+
+    Parameters:
+    -----------
+    Z_topo : Tensor
+        Surface elevation (m)
+    ELA : Tensor or float
+        Equilibrium Line Altitude (m)
+    grad_b : Tensor or float
+        Mass balance gradient (m ice eq / m elevation)
+    b_max : Tensor or float
+        Maximum accumulation rate (m ice eq / year)
+
+    Returns:
+    --------
+    smb : Tensor
+        Surface mass balance in m ice eq per year (same shape as Z_topo)
+    """
+    device = Z_topo.device
+    dtype = Z_topo.dtype
+
+    # Convert inputs to tensors on the same device/dtype as Z_topo
+    ELA = torch.as_tensor(ELA, dtype=dtype, device=device)
+    grad_b = torch.as_tensor(grad_b, dtype=dtype, device=device)
+    b_max = torch.as_tensor(b_max, dtype=dtype, device=device)
+
+    # Compute SMB: grad_b * (Z - ELA), capped at b_max
+    smb = torch.minimum(grad_b * (Z_topo - ELA), b_max)
+
+    return smb
+
+
+# Backward compatibility alias
+update_smb = update_smb_PDD
 
 
 
