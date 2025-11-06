@@ -1,0 +1,10 @@
+program: run.py   # change to your filename
+method: grid
+metric:
+  name: loss/total
+  goal: minimize
+parameters:
+  learning_rate:
+    values: [0.02]
+  regularisation:
+    values: [10.0]

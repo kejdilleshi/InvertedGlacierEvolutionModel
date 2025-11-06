@@ -1,122 +1,132 @@
-from core.smb import update_smb
-from visualization.plots import visualize
+from core.smb import update_smb, cosine_temperature_series
+from visualization.plots import visualize, visualize_velocities
 import torch
 from torch.utils.checkpoint import checkpoint
+from core.forward_schemes.emulator_step import checkpointed_emulator_step
+from core.forward_schemes.sia_step import checkpointed_SIA_step
 
-def reduce_hook(g):
-    scale= 0.51  # should be >0; The closer to 0 the smaller the change to `g`,  is simple arctangent
-    g2 = torch.atan(scale*g)/scale
-    # print(f"[reduce_hook]  incoming {torch.norm(g)} → outgoing {torch.norm(g2)}")
-    return g2
-def reduce_hook2(g):
-    scale= 0.051
-    g2 = torch.atan(scale*g)/scale
-    # print(f"[H_Ice]  incoming {torch.norm(g)} → outgoing {torch.norm(g2)}")
-    return g2
 
+def _year_index_from_time(time: torch.Tensor,
+                          n_years: int,
+                          year_len: float = 1.0,
+                          t0: float = 1864.0,
+                          cycle: bool = False) -> torch.Tensor:
+    """
+    Map continuous model time -> integer year index [0..n_years-1].
+    Assumes `time` is in *years since t0*, with each year having length `year_len`.
+    """
+    # floor((time - t0)/year_len)
+    yi = torch.floor((time - t0) / year_len)
+    if cycle:
+        yi = yi % n_years
+    else:
+        yi = yi.clamp(0, n_years - 1)
+    return yi.to(torch.long)
+ 
 class GlacierDynamicsCheckpointed(torch.nn.Module):
-    def __init__(self, Z_topo, ttot, rho, g, fd, Lx, Ly, dx, dy, dtmax, device):
+    def __init__(self, Z_topo, H_init, ice_mask, device, args, model=None, visualize=False):
         super().__init__()
         self.Z_topo = Z_topo
-        self.ttot = ttot
-        self.rho = rho
-        self.g = g
-        self.fd = fd
-        self.Lx = Lx
-        self.Ly = Ly
-        self.dx = dx
-        self.dy = dy
-        self.dtmax = dtmax
+        self.ice_mask = ice_mask
+        self.H_init = H_init
         self.device = device
+        self.model = model
+        self.visualize = visualize
 
-    def forward(self, precip_tensor, T_m_lowest, T_s):
-        return self.solve_glacier_dynamics(self.Z_topo, self.ttot,precip_tensor, T_m_lowest, T_s)
+        # Assign from args
+        self.ttot = args.ttot
+        self.t_start = args.t_start
+        self.rho = args.rho
+        self.g = args.g
+        self.fd = args.fd
+        self.Lx = Z_topo.shape[1] * args.dx
+        self.Ly = Z_topo.shape[0] * args.dy
+        self.dx = args.dx
+        self.dy = args.dy
+        self.dtmax = args.dtmax
 
-    def solve_glacier_dynamics(self, Z_topo, ttot,precip_tensor,T_m_lowest, T_s):
-        nx = int(self.Lx / self.dx)
-        ny = int(self.Ly / self.dy)
+    
 
-        epsilon = torch.tensor(1.e-10, device=self.device)
-        H_ice = torch.zeros((ny, nx), device=self.device,requires_grad=True)
+    def forward(self, precip_tensor, T_m_lowest, T_s,P_daily,T_daily, melt_factor):
+        return self.solve_glacier_dynamics(self.Z_topo, self.ttot,self.t_start, precip_tensor, T_m_lowest, T_s, P_daily,T_daily,melt_factor)    
 
-        # H_ice = H_initial.to(device=device)
-        
+
+    def solve_glacier_dynamics(self, Z_topo, ttot,time, precip_tensor, T_m_lowest, T_s,P_daily,T_daily,melt_factor):
+        ny, nx = Z_topo.shape
+        # H_ice = torch.zeros((ny, nx), device=self.device)
+        H_ice=self.H_init
+      
         Z_surf = Z_topo + H_ice
 
-        time = torch.tensor(0., device=self.device)
         # dt = torch.tensor(self.dtmax, device=self.device)
         it = torch.tensor(0., device=self.device)
-        t_freq=torch.tensor(5., device=self.device)
-        t_last_update=torch.tensor(0., device=self.device)
-        #initial smb 
+        t_freq = torch.tensor(10., device=self.device)
+        t_last_update = torch.tensor(self.t_start, device=self.device)
+        # initial smb 
         idx=0
-        smb = update_smb(Z_surf,precip_tensor[idx],T_m_lowest, T_s) 
-        # Initialize storage variables
-        H1 = H2 = H3 = None
+        # Infer number of climate years (supports single-year inputs too)
+        # if P_daily.ndim >= 2:
+        #     n_years = P_daily.shape[0]
+        # else:
+        #     n_years = 1
 
-        def checkpointed_step(H_ice, Z_surf,smb, time):
-            # Compute H_avg
-            H_avg = 0.25 * (H_ice[:-1, :-1] + H_ice[1:, 1:] + H_ice[:-1, 1:] + H_ice[1:, :-1])
+        # # Initial SMB using year index from t_start=0
+        # prev_yi = _year_index_from_time(t_start, n_years,t0=1847.0)
+        # smb = update_smb(Z_surf, P_daily=P_daily[prev_yi], T_daily=T_daily[prev_yi],melt_factor=melt_factor) * self.ice_mask
 
-            # Compute Snorm
-            Sx = (Z_surf[:, 1:] - Z_surf[:, :-1]) / self.dx
-            Sy = (Z_surf[1:, :] - Z_surf[:-1, :]) / self.dy
-            Sx = 0.5 * (Sx[:-1, :] + Sx[1:, :])
-            Sy = 0.5 * (Sy[:, :-1] + Sy[:, 1:])
-            Snorm = torch.sqrt(Sx**2 + Sy**2 + epsilon)
-               
-            # Compute diffusivity
-            D = self.fd * (self.rho * self.g)**3.0 * H_avg**5 * Snorm**2 + epsilon
+        smb = update_smb(Z_surf, precip_tensor, T_m_lowest[idx], T_s,melt_factor=melt_factor) * self.ice_mask 
+        smb = torch.where((smb < 0) | (self.ice_mask > 0.5), smb, torch.tensor(-10.0, device=self.device))
 
-            # Compute adaptive time step.
-            dt_value = min(min(self.dx, self.dy)**2 / (2.7 * torch.max(D).item()), self.dtmax)
-            dt = torch.tensor(dt_value, dtype=torch.float32, device=self.device, requires_grad=True)
-
-            # Compute fluxes
-            qx = -(0.5 * (D[:-1, :] + D[1:, :])) * (Z_surf[1:-1, 1:] - Z_surf[1:-1, :-1]) / self.dx
-            qy = -(0.5 * (D[:, :-1] + D[:, 1:])) * (Z_surf[1:, 1:-1] - Z_surf[:-1, 1:-1]) / self.dy
-
-            # Compute thickness change rate
-            dHdt = -(torch.diff(qx, dim=1) / self.dx + torch.diff(qy, dim=0) / self.dy)
-
-            # Update ice thickness
-            H_ice = H_ice.clone()
-            H_ice[1:-1, 1:-1] = H_ice[1:-1, 1:-1] + dt * dHdt
-
-            H_ice = H_ice.clone()
-
-            smb.register_hook(reduce_hook)
-
-            H_ice[1:-1, 1:-1] = H_ice[1:-1, 1:-1] + dt * smb[1:-1, 1:-1]
-
-            # Ensure ice thickness remains positive
-            H_ice = torch.relu(H_ice)
-
-            # Update surface topography
-            Z_surf = Z_topo + H_ice
-            if Z_surf.requires_grad:
-                Z_surf.retain_grad()                # Required to keep .grad field
-                Z_surf.register_hook(reduce_hook2)   # Now hook will be called during backward
-            return H_ice, Z_surf, time + dt
+        H_ice_1880 = None  # store H_ice at 3/4 * ttot
+        H_ice_1926 = None  # store H_ice at 3/4 * ttot
+        H_ice_1957 = None  # store H_ice at 3/4 * ttot
+        H_ice_1980 = None  # store H_ice at 3/4 * ttot
+        H_ice_1999 = None  # store H_ice at 3/4 * ttot
+        H_ice_2009 = None  # store H_ice at 3/4 * ttot
 
         while time < ttot:           
             
-            H_ice, Z_surf, time = checkpoint(checkpointed_step, H_ice, Z_surf, smb, time)
-            it += 1
-            # Save H_ice at specific times
-            t_years = time.item()
-            if H1 is None and t_years >= 120:
-                H1 = H_ice.clone().detach()
-            if H2 is None and t_years >= 160:
-                H2 = H_ice.clone().detach()
-            
-            # Compute surface mass balance (SMB)
-            if (time-t_last_update)>=t_freq:
-                idx+=1
-                smb = update_smb(Z_surf,precip_tensor[idx],T_m_lowest, T_s)
-                t_last_update=time.clone()
-                # Visualization call
-                # visualize(Z_surf.detach(), time.item(), H_ice.detach(),self.Lx,self.Ly)    
-                      
-        return H1, H2, H_ice
+            # H_ice, Z_surf, time = checkpointed_SIA_step(
+            #                             H_ice, Z_surf, smb, time, 
+            #                             self.Z_topo, self.dx, self.dy, self.dtmax, 
+            #                             self.rho, self.g, self.fd, self.device
+            #                         )
+            H_ice, Z_surf, time, ubar, vbar = checkpoint(
+                                        checkpointed_emulator_step, 
+                                        H_ice, Z_surf, smb, time, 
+                                        self.Z_topo, self.dx, self.dy, self.dtmax, 
+                                        self.model
+                                    )
+            # store H_ice when time 
+            if (H_ice_1880 is None) and (time >= 1880):
+                H_ice_1880 = H_ice.clone()
+            if (H_ice_1926 is None) and (time >= 1926):
+                H_ice_1926 = H_ice.clone()
+            if (H_ice_1957 is None) and (time >= 1957):
+                H_ice_1957 = H_ice.clone()
+            if (H_ice_1980 is None) and (time >= 1980):   
+                H_ice_1980 = H_ice.clone()
+            if (H_ice_1999 is None) and (time >= 1999):
+                H_ice_1999 = H_ice.clone()
+            if (H_ice_2009 is None) and (time >= 2009):
+                H_ice_2009 = H_ice.clone()
 
+            it += 1
+            # Recompute SMB 
+            # yi = _year_index_from_time(time, n_years,t0=1847.0)
+            # crossed_year = (yi.item() != prev_yi.item())
+            if (time - t_last_update) >= t_freq :
+                idx+=1
+                # smb = update_smb(Z_surf, P_daily=P_daily[yi], T_daily=T_daily[yi],melt_factor=melt_factor) * self.ice_mask
+                smb = update_smb(Z_surf, precip_tensor, T_m_lowest[idx], T_s,melt_factor=melt_factor) * self.ice_mask 
+                smb = torch.where((smb < 0) | (self.ice_mask > 0.5), smb,
+                                  torch.tensor(-10.0, device=self.device))
+                t_last_update = time.clone()
+
+                # prev_yi = yi
+                if self.visualize:
+
+                    visualize_velocities(ubar.detach(), vbar.detach(),H_ice.detach(), smb.detach(), time)
+
+        # print(f"number of iterations is {it}")
+        return H_ice_1880, H_ice_1926,H_ice_1957,H_ice_1980,H_ice_1999, H_ice_2009, H_ice  

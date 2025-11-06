@@ -3,3 +3,8 @@
 *.nc
 __pycache__/
 surflib3D
+*.pth
+results/*
+wandb/*
+visualization/FIGURES/*
+visualization/movie/*
