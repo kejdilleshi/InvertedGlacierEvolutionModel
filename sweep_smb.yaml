@@ -1,0 +1,20 @@
+program: invert_SMB.py
+method: grid
+project: smb-inversion
+metric:
+  name: final_loss
+  goal: minimize
+
+parameters:
+  ttot:
+    values: [2010.0]
+  learning_rate:
+    values: [0.01]
+  reg_lambda:
+    values: [0.0]
+  max_iters:
+    value: 10000
+  early_stop_patience:
+    value: 50
+  early_stop_threshold:
+    value: 0.00001

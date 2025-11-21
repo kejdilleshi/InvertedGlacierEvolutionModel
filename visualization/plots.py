@@ -72,7 +72,7 @@ def plot_loss_components(total_loss_history, data_fidelity_history,args):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(args.outdir,"loss_cuve.png"))
+    plt.savefig(os.path.join(args.outdir,"loss_curve.png"))
 
 
 def plot_loss_and_precipitation(data_fidelity_history, Precip_history, name, true_precip=1.5):
@@ -280,6 +280,106 @@ def visualize_velocities(ubar, vbar, H_ice, smb, time, dx=100, dy=100):
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_thickness_divflux_velocities(H_ice, ubar, vbar, dx=100, dy=100, time=None):
+    """
+    Create a 3-panel plot showing:
+    1. Ice thickness
+    2. Flux divergence
+    3. Velocity field
+
+    Parameters
+    ----------
+    H_ice : torch.Tensor
+        Ice thickness field (ny, nx)
+    ubar : torch.Tensor
+        x-component of velocity (ny, nx)
+    vbar : torch.Tensor
+        y-component of velocity (ny, nx)
+    dx : float
+        Grid spacing in x direction (m)
+    dy : float
+        Grid spacing in y direction (m)
+    time : float, optional
+        Time for display in title
+    """
+    from utils.emulator_tools import compute_divflux
+
+    # Convert tensors to numpy
+    H_ice_np = H_ice.detach().to(torch.float32).cpu().numpy()
+    u_np = ubar.detach().to(torch.float32).cpu().numpy()
+    v_np = vbar.detach().to(torch.float32).cpu().numpy()
+
+    # Compute flux divergence
+    divflux = compute_divflux(ubar, vbar, H_ice, dx, dy)
+    divflux_np = divflux.detach().to(torch.float32).cpu().numpy()
+
+    ny, nx = H_ice_np.shape
+    extent = [0, nx*dx/1000, 0, ny*dy/1000]  # Convert to km
+    x = np.arange(nx) * dx
+    y = np.arange(ny) * dy
+    X, Y = np.meshgrid(x, y)
+
+    # Create figure
+    clear_output(wait=True)
+    fig = plt.figure(figsize=(15, 5), dpi=150)
+
+    # --- Subplot 1: Ice Thickness ---
+    ax1 = plt.subplot(1, 3, 1)
+    im1 = ax1.imshow(np.where(H_ice_np > 0, H_ice_np, np.nan),
+                     cmap='viridis', origin='lower', extent=extent)
+    cax1 = make_axes_locatable(ax1).append_axes("right", size="3%", pad=0.05)
+    plt.colorbar(im1, cax=cax1, label="Ice Thickness (m)")
+    title_str = "Ice Thickness"
+    if time is not None:
+        title_str += f" at {int(time)} y"
+    ax1.set_title(title_str)
+    ax1.set_xlabel("x (km)")
+    ax1.set_ylabel("y (km)")
+
+    # --- Subplot 2: Flux Divergence ---
+    ax2 = plt.subplot(1, 3, 2)
+    # Mask where ice thickness is zero
+    divflux_masked = np.where(H_ice_np > 0, divflux_np, np.nan)
+    # Use diverging colormap centered at zero
+    vmax = 15 #np.nanmax(np.abs(divflux_masked))
+    im2 = ax2.imshow(divflux_masked, cmap='RdBu_r', origin='lower',
+                     extent=extent, vmin=-vmax, vmax=vmax)
+    cax2 = make_axes_locatable(ax2).append_axes("right", size="3%", pad=0.05)
+    plt.colorbar(im2, cax=cax2, label="Flux Divergence (m/yr)")
+    title_str = "Flux Divergence"
+    if time is not None:
+        title_str += f" at {int(time)} y"
+    ax2.set_title(title_str)
+    ax2.set_xlabel("x (km)")
+    ax2.set_ylabel("y (km)")
+
+    # --- Subplot 3: Velocity Magnitude ---
+    ax3 = plt.subplot(1, 3, 3)
+
+    # Compute velocity magnitude
+    vel_mag = np.sqrt(u_np**2 + v_np**2)
+
+    # Mask where ice thickness is zero
+    vel_mag_masked = np.where(H_ice_np > 0, vel_mag, np.nan)
+
+    # Plot velocity magnitude
+    im3 = ax3.imshow(vel_mag_masked, cmap='plasma', origin='lower', extent=extent)
+    cax3 = make_axes_locatable(ax3).append_axes("right", size="3%", pad=0.05)
+    plt.colorbar(im3, cax=cax3, label="Velocity Magnitude (m/yr)")
+
+    title_str = "Velocity Magnitude"
+    if time is not None:
+        title_str += f" at {int(time)} y"
+    ax3.set_title(title_str)
+    ax3.set_xlabel("x (km)")
+    ax3.set_ylabel("y (km)")
+
+    plt.tight_layout()
+    plt.show()
+
+    return fig
 
 def plot_sim_obs_extents(
     sim_list,                    # list of 7 arrays (simulations)

@@ -190,145 +190,114 @@ def inversion_extent(
 
     return [H1880,H26,H57,H80,H99,H09,H17], loss,data, metrics
 
-# # ----------------------------------------------------------------------------------- delete below -----------------------------------------------------------------------------------
-# import torch
-# import torch.nn.functional as F
-# from typing import Tuple
 
-# # ---------- Safety helpers ----------
-# def _ensure_tensor(x, like: torch.Tensor, name: str) -> torch.Tensor:
-#     if x is None:
-#         raise ValueError(f"{name} is None (glacier_model likely returned None).")
-#     if not isinstance(x, torch.Tensor):
-#         x = torch.as_tensor(x, device=like.device, dtype=like.dtype)
-#     else:
-#         x = x.to(device=like.device, dtype=like.dtype)
-#     if not torch.isfinite(x).all():
-#         raise ValueError(f"{name} contains inf/nan.")
-#     return x
+def invert_field(
+    smb_field: torch.Tensor,
+    observation: torch.Tensor,
+    glacier_model,
+    reg_lambda: float = 0.01,
+    thickness_thresh: float = 1.0,
+    smooth_type: str = 'gradient',  # 'gradient' or 'laplacian'
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Invert for SMB field given a single observation (2D ice thickness field).
 
-# # Central-diff grads (same as before), but we’ll compute grads on `x` directly.
-# def _spatial_grads(x: torch.Tensor, spacing=(1.0,1.0)):
-#     if x.ndim == 2:  # (H,W)
-#         dy, dx = spacing if len(spacing)==2 else spacing[-2:]
-#         x4 = x[None,None]
-#         kx = torch.tensor([[[[-0.5,0.0,0.5]]]], dtype=x.dtype, device=x.device)/dx
-#         ky = torch.tensor([[[[-0.5],[0.0],[0.5]]]], dtype=x.dtype, device=x.device)/dy
-#         gx = F.conv2d(F.pad(x4,(1,1,0,0),mode='replicate'), kx)[0,0]
-#         gy = F.conv2d(F.pad(x4,(0,0,1,1),mode='replicate'), ky)[0,0]
-#         return gy, gx  # (d/dy, d/dx)
-#     elif x.ndim == 3:  # (D,H,W)
-#         dz, dy, dx = spacing if len(spacing)==3 else (spacing[0], spacing[0], spacing[1])
-#         x5 = x[None,None]
-#         kx = torch.zeros((1,1,1,1,3), dtype=x.dtype, device=x.device); kx[0,0,0,0,:] = torch.tensor([-0.5,0,0.5], dtype=x.dtype, device=x.device)/dx
-#         ky = torch.zeros((1,1,1,3,1), dtype=x.dtype, device=x.device); ky[0,0,0,:,0] = torch.tensor([-0.5,0,0.5], dtype=x.dtype, device=x.device)/dy
-#         kz = torch.zeros((1,1,3,1,1), dtype=x.dtype, device=x.device); kz[0,0,:,0,0] = torch.tensor([-0.5,0,0.5], dtype=x.dtype, device=x.device)/dz
-#         gx = F.conv3d(F.pad(x5,(1,1,0,0,0,0),mode='replicate'), kx)[0,0]
-#         gy = F.conv3d(F.pad(x5,(0,0,1,1,0,0),mode='replicate'), ky)[0,0]
-#         gz = F.conv3d(F.pad(x5,(0,0,0,0,1,1),mode='replicate'), kz)[0,0]
-#         return gz, gy, gx
-#     else:
-#         raise ValueError("x must be 2-D or 3-D.")
+    This function optimizes an SMB field so that when used in the glacier model,
+    it produces ice thickness that matches the observation.
 
-# def _mask(x: torch.Tensor, thresh: float, scale: float = 20.0) -> torch.Tensor:
-#     # Slightly gentler slope than 100 to avoid super-steep logits early on.
-#     return torch.sigmoid(scale * (x - thresh)).to(x.dtype)
+    Parameters:
+    -----------
+    smb_field : torch.Tensor
+        SMB field to optimize (2D tensor [ny, nx])
+        Should have requires_grad=True for optimization
+    observation : torch.Tensor
+        Observed ice thickness field (2D tensor [ny, nx])
+    glacier_model : GlacierDynamicsCheckpointed
+        Glacier model instance
+    reg_lambda : float
+        Regularization weight for spatial smoothness (default: 0.01)
+    thickness_thresh : float
+        Thickness threshold for glacier presence (default: 1.0 m)
+    smooth_type : str
+        Type of smoothness regularization:
+        - 'gradient': penalize spatial gradients (total variation)
+        - 'laplacian': penalize curvature (second derivatives)
 
-# # ---------- Stable pseudo-SDF ----------
-# def _phi_from_field_stable(x: torch.Tensor, thresh: float,
-#                            spacing=(1.0,1.0), g_floor: float = 1e-2,
-#                            band_m: float = 100.0) -> Tuple[torch.Tensor, torch.Tensor]:
-#     """
-#     φ ≈ (x - thresh) / ||∇x||  with gradient floor, then soft-clip φ to ±band_m via tanh.
-#     Everything is differentiable.
-#     g_floor: minimum gradient norm in units of (thickness per meter).
-#     band_m : meters; soft clipping range for φ to prevent huge values away from the front.
-#     """
-#     p = _mask(x, thresh)  # soft occupancy
-#     grads = _spatial_grads(x, spacing=spacing)
-#     g2 = sum(g*g for g in grads)
-#     gnorm = torch.sqrt(g2 + torch.finfo(x.dtype).eps)
-#     gnorm = torch.clamp(gnorm, min=g_floor)
-#     phi = (x - thresh) / gnorm  # meters
-#     # soft clip to keep diffs bounded but preserve gradients
-#     phi = band_m * torch.tanh(phi / band_m)
-#     return p, phi
+    Returns:
+    --------
+    H_sim : torch.Tensor
+        Simulated ice thickness field (2D tensor [ny, nx])
+    loss : torch.Tensor
+        Total loss (data term + regularization)
+    data_term : torch.Tensor
+        Data fidelity term only
+    metrics : dict
+        Dictionary with diagnostic metrics (mse, rmse, mae, bias, std, area)
 
-# def sdf_band_huber(phi_s: torch.Tensor, phi_o: torch.Tensor,
-#                    band_m: float = 50.0, tau: float = 5.0, beta: float = 1.0):
-#     # band weights around both level-sets; uses soft φ already
-#     w = torch.sigmoid((band_m - phi_s.abs())/(tau+1e-12)) + torch.sigmoid((band_m - phi_o.abs())/(tau+1e-12))
-#     w = torch.clamp(w, 0.0, 1.0)
-#     diff = phi_s - phi_o
-#     l = F.smooth_l1_loss(diff, torch.zeros_like(diff), beta=beta, reduction='none')
-#     return (w * l).sum() / (w.sum() + 1e-12)
-# def inversion_extent(
-#     precip_tensor, T_m_lowest, T_s, P_daily, T_daily, melt_factor,
-#     obs1880, obs26, obs57, obs80, obs99, obs09, obs17,
-#     glacier_model,
-#     reg_lambda: float = 1e-3,
-#     thickness_thresh: float = 1.0,
-#     w1880: float = 0.0,
-#     w26: float = 0.0, w57: float = 0.0, w80: float = 0.0, w99: float = 0.0, w09: float = 0.0, w17: float = 0.0,
-#     sdf_band_m: float = 50.0,
-#     sdf_tau: float = 5.0,
-#     sdf_beta: float = 1.0,
-#     spacing=(1.0,1.0),
-#     g_floor: float = 1e-2,          # NEW: gradient floor
-#     phi_soft_band: float = 100.0    # NEW: soft φ clip range
-# ):
-#     # Forward
-#     H1880, H26, H57, H80, H99, H09, H17 = glacier_model( precip_tensor=precip_tensor,
-#         T_m_lowest=T_m_lowest,
-#         T_s=T_s,
-#         P_daily=P_daily,
-#         T_daily=T_daily,
-#         melt_factor=melt_factor)
+    Notes:
+    ------
+    - The SMB field should be initialized before calling this function
+    - Spatial smoothness regularization encourages neighboring SMB values to be similar
+    - Use this in an optimization loop, updating smb_field with gradient descent
 
-#     # Fail fast if model returned None or NaNs
-#     ref = precip_tensor if isinstance(precip_tensor, torch.Tensor) else T_m_lowest
-#     H1880 = _ensure_tensor(H1880, ref, "H1880")
-#     H26   = _ensure_tensor(H26,   ref, "H26")
-#     H57   = _ensure_tensor(H57,   ref, "H57")
-#     H80   = _ensure_tensor(H80,   ref, "H80")
-#     H99   = _ensure_tensor(H99,   ref, "H99")
-#     H09   = _ensure_tensor(H09,   ref, "H09")
-#     H17   = _ensure_tensor(H17,   ref, "H17")
+    Example:
+    --------
+    >>> # Initialize SMB field
+    >>> smb_field = torch.zeros(ny, nx, device=device, requires_grad=True)
+    >>> optimizer = torch.optim.Adam([smb_field], lr=0.01)
+    >>>
+    >>> # Optimization loop
+    >>> for i in range(100):
+    >>>     optimizer.zero_grad()
+    >>>     H_sim, loss, data, metrics = invert_field(
+    >>>         smb_field, observation, glacier_model, reg_lambda=0.01
+    >>>     )
+    >>>     loss.backward()
+    >>>     optimizer.step()
+    """
 
-#     # Pseudo-SDFs (stable)
-#     S1880, PhiS1880 = _phi_from_field_stable(H1880, thickness_thresh, spacing, g_floor, phi_soft_band)
-#     S26,   PhiS26   = _phi_from_field_stable(H26,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     S57,   PhiS57   = _phi_from_field_stable(H57,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     S80,   PhiS80   = _phi_from_field_stable(H80,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     S99,   PhiS99   = _phi_from_field_stable(H99,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     S09,   PhiS09   = _phi_from_field_stable(H09,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     S17,   PhiS17   = _phi_from_field_stable(H17,   thickness_thresh, spacing, g_floor, phi_soft_band)
+    # ---- Forward simulation using the SMB field ----
+    H_sim = glacier_model(
+        precip_tensor=None,
+        T_m_lowest=None,
+        T_s=None,
+        P_daily=None,
+        T_daily=None,
+        melt_factor=None,
+        smb_method='field',
+        smb_field=smb_field
+    )
 
-#     O1880, PhiO1880 = _phi_from_field_stable(obs1880, thickness_thresh, spacing, g_floor, phi_soft_band)
-#     O26,   PhiO26   = _phi_from_field_stable(obs26,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     O57,   PhiO57   = _phi_from_field_stable(obs57,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     O80,   PhiO80   = _phi_from_field_stable(obs80,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     O99,   PhiO99   = _phi_from_field_stable(obs99,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     O09,   PhiO09   = _phi_from_field_stable(obs09,   thickness_thresh, spacing, g_floor, phi_soft_band)
-#     O17,   PhiO17   = _phi_from_field_stable(obs17,   thickness_thresh, spacing, g_floor, phi_soft_band)
+    # ---- Compute data fidelity (masked misfit) ----
+    metrics = _eval_pair(H_sim, observation, thickness_thresh)
+    data_term = metrics["mse"]
 
-#     # SDF-band loss (robust)
-#     L1880 = sdf_band_huber(PhiS1880, PhiO1880, band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
-#     L26   = sdf_band_huber(PhiS26,   PhiO26,   band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
-#     L57   = sdf_band_huber(PhiS57,   PhiO57,   band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
-#     L80   = sdf_band_huber(PhiS80,   PhiO80,   band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
-#     L99   = sdf_band_huber(PhiS99,   PhiO99,   band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
-#     L09   = sdf_band_huber(PhiS09,   PhiO09,   band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
-#     L17   = sdf_band_huber(PhiS17,   PhiO17,   band_m=sdf_band_m, tau=sdf_tau, beta=sdf_beta)
+    # ---- Spatial smoothness regularization ----
+    if smooth_type == 'gradient':
+        # Total variation-like: penalize gradients in x and y directions
+        # This encourages spatially smooth SMB fields
+        grad_x = smb_field[:, 1:] - smb_field[:, :-1]  # differences in x
+        grad_y = smb_field[1:, :] - smb_field[:-1, :]  # differences in y
+        smoothness = torch.sum(grad_x**2) + torch.sum(grad_y**2)
 
-#     weights = torch.tensor([w1880,w26,w57,w80,w99,w09,w17], device=H80.device, dtype=H80.dtype)
-#     losses  = torch.stack([L1880,L26,L57,L80,L99,L09,L17])
-#     data_term = (weights * losses).sum() / torch.clamp(weights.sum(), min=1e-12)
+    elif smooth_type == 'laplacian':
+        # Laplacian regularization: penalize curvature (second derivatives)
+        # This encourages even smoother fields
+        # Compute discrete Laplacian: ∇²u ≈ u[i-1,j] + u[i+1,j] + u[i,j-1] + u[i,j+1] - 4*u[i,j]
+        laplacian = (
+            smb_field[:-2, 1:-1] +  # above
+            smb_field[2:, 1:-1] +   # below
+            smb_field[1:-1, :-2] +  # left
+            smb_field[1:-1, 2:] -   # right
+            4 * smb_field[1:-1, 1:-1]  # center
+        )
+        smoothness = torch.sum(laplacian**2)
 
-#     smoothness_x = torch.sum((T_m_lowest[1:] - T_m_lowest[:-1])**2)
-#     loss = data_term + reg_lambda * smoothness_x
+    else:
+        raise ValueError(f"smooth_type must be 'gradient' or 'laplacian', got '{smooth_type}'")
 
-#     return [H1880,H26,H57,H80,H99,H09,H17], loss,data_term, {
-#         "1880":{"sdf_band":L1880}, "26":{"sdf_band":L26}, "57":{"sdf_band":L57},
-#         "80":{"sdf_band":L80}, "99":{"sdf_band":L99}, "09":{"sdf_band":L09}, "17":{"sdf_band":L17}
-#     }
+    # ---- Total loss ----
+    loss = data_term + reg_lambda * smoothness
+
+    return H_sim, loss, data_term, metrics
+

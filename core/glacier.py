@@ -1,5 +1,5 @@
 from core.smb import update_smb_PDD, update_smb_ELA, cosine_temperature_series
-from visualization.plots import visualize, visualize_velocities
+from visualization.plots import visualize, visualize_velocities,plot_thickness_divflux_velocities
 import torch
 from torch.utils.checkpoint import checkpoint
 from core.forward_schemes.emulator_step import checkpointed_emulator_step
@@ -44,6 +44,7 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
         self.dx = args.dx
         self.dy = args.dy
         self.dtmax = args.dtmax
+        self.vis_freq = args.vis_freq
 
     
 
@@ -66,7 +67,7 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
 
         # dt = torch.tensor(self.dtmax, device=self.device)
         it = torch.tensor(0., device=self.device)
-        t_freq = torch.tensor(10., device=self.device)
+        t_freq = torch.tensor(self.vis_freq, device=self.device)
         t_last_update = torch.tensor(self.t_start, device=self.device)
         # initial smb
         idx=0
@@ -141,23 +142,25 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
                                         checkpointed_emulator_step, 
                                         H_ice, Z_surf, smb, time, 
                                         self.Z_topo, self.dx, self.dy, self.dtmax, 
-                                        self.model
+                                        self.model,
+                                        0.05
                                     )
-            # store H_ice when time 
-            if (H_ice_1880 is None) and (time >= 1880):
-                H_ice_1880 = H_ice.clone()
-            if (H_ice_1926 is None) and (time >= 1926):
-                H_ice_1926 = H_ice.clone()
-            if (H_ice_1957 is None) and (time >= 1957):
-                H_ice_1957 = H_ice.clone()
-            if (H_ice_1980 is None) and (time >= 1980):   
-                H_ice_1980 = H_ice.clone()
-            if (H_ice_1999 is None) and (time >= 1999):
-                H_ice_1999 = H_ice.clone()
-            if (H_ice_2009 is None) and (time >= 2009):
-                H_ice_2009 = H_ice.clone()
+            # # store H_ice when time 
+            # if (H_ice_1880 is None) and (time >= 1880):
+            #     H_ice_1880 = H_ice.clone()
+            # if (H_ice_1926 is None) and (time >= 1926):
+            #     H_ice_1926 = H_ice.clone()
+            # if (H_ice_1957 is None) and (time >= 1957):
+            #     H_ice_1957 = H_ice.clone()
+            # if (H_ice_1980 is None) and (time >= 1980):   
+            #     H_ice_1980 = H_ice.clone()
+            # if (H_ice_1999 is None) and (time >= 1999):
+            #     H_ice_1999 = H_ice.clone()
+            # if (H_ice_2009 is None) and (time >= 2009):
+            #     H_ice_2009 = H_ice.clone()
 
             it += 1
+            # print(f"Time: {time.item():.2f} years, Time step: {it.item()}")
             
             if (time - t_last_update) >= t_freq :
                 idx+=1
@@ -178,6 +181,10 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
                 t_last_update = time.clone()
 
                 if self.visualize:
-                    visualize_velocities(ubar.detach(), vbar.detach(),H_ice.detach(), smb.detach(), time)
-
-        return H_ice_1880, H_ice_1926,H_ice_1957,H_ice_1980,H_ice_1999, H_ice_2009, H_ice  
+                    # visualize_velocities(ubar.detach(), vbar.detach(),H_ice.detach(), smb.detach(), time)
+                    plot_thickness_divflux_velocities(H_ice, ubar, vbar, dx=100, dy=100, time=time)
+        # return H_ice_1880, H_ice_1926,H_ice_1957,H_ice_1980,H_ice_1999, H_ice_2009, H_ice  
+        # torch.save(smb, 'data/smb_initial.pt')
+        # print(f"Number of time steps: {it.item()}")
+        return H_ice  
+    

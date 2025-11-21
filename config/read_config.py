@@ -17,6 +17,7 @@ def parse_arguments(arg_list=None):
     parser.add_argument('--fd', type=float, default=0.25e-16, help='Flow rate factor (Pa⁻³ s⁻¹)')
     parser.add_argument('--dx', type=int, default=100, help='Grid resolution in x direction (m)')
     parser.add_argument('--dy', type=int, default=100, help='Grid resolution in y direction (m)')
+    parser.add_argument('--vis_freq', type=float, default=10.0, help='Visualization frequency (yr)')
     parser.add_argument('--outdir', type=str, default='./results/run1', help='Output directory')
 
     if arg_list is None:
