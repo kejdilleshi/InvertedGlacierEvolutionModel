@@ -9,6 +9,8 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import os
 from matplotlib import colors
 from matplotlib.lines import Line2D
+from utils.emulator_tools import compute_divflux
+
 
 
 def plot_temp(T_m_lowest, iter,args):
@@ -282,7 +284,7 @@ def visualize_velocities(ubar, vbar, H_ice, smb, time, dx=100, dy=100):
     plt.show()
 
 
-def plot_thickness_divflux_velocities(H_ice, ubar, vbar, dx=100, dy=100, time=None):
+def plot_thickness_divflux_velocities(H_ice, ubar, vbar, dx=100, dy=100, time=None,dt=None):
     """
     Create a 3-panel plot showing:
     1. Ice thickness
@@ -304,7 +306,6 @@ def plot_thickness_divflux_velocities(H_ice, ubar, vbar, dx=100, dy=100, time=No
     time : float, optional
         Time for display in title
     """
-    from utils.emulator_tools import compute_divflux
 
     # Convert tensors to numpy
     H_ice_np = H_ice.detach().to(torch.float32).cpu().numpy()

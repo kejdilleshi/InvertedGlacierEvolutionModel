@@ -131,4 +131,5 @@ def compute_divflux_limited(u, v, h, dx, dy, dt, slope_type="superbee"):
 
     # Divergence back to cell centers
     divflux = (Qx[:, 1:] - Qx[:, :-1]) / dx + (Qy[1:, :] - Qy[:-1, :]) / dy
+
     return divflux

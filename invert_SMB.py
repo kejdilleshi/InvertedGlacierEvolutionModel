@@ -35,10 +35,10 @@ def plot_3panel_combined(smb_inverted, smb_true, H_sim, H_obs, icemask, save_pat
     delta_smb = smb_inv_cpu - smb_true_cpu
     delta_H = H_sim_cpu - H_obs_cpu
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(12, 5))
 
     # Panel 1: SMB inverted with fixed colorbar [-21, 2]
-    im0 = axes[0].imshow(smb_inv_cpu, cmap='viridis', vmin=-21, vmax=2, aspect='auto')
+    im0 = axes[0].imshow(smb_inv_cpu, cmap='viridis', vmin=-20, vmax=2, aspect='auto')
     axes[0].invert_yaxis()
     axes[0].set_title('SMB Inverted')
     fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04, label='m w.e./yr')
@@ -84,7 +84,7 @@ def plot_3panel_smb(smb_inverted, smb_true, icemask, save_path):
     fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
     # Residual: use diverging colormap centered at 0
-    lim = np.max(np.abs(residual_cpu))*0.5
+    lim = 0.4
     im2 = axes[2].imshow(residual_cpu, cmap='RdBu', vmin=-lim, vmax=lim, aspect='auto')
     axes[2].invert_yaxis()
     axes[2].set_title('Residual')
@@ -119,7 +119,7 @@ def plot_3panel_thickness(H_sim, observation, icemask, save_path):
     fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
     # Residual: use diverging colormap centered at 0
-    lim = np.max(np.abs(residual_cpu))*0.9
+    lim = 30
     im2 = axes[2].imshow(residual_cpu, cmap='RdBu', vmin=-lim, vmax=lim, aspect='auto')
     axes[2].invert_yaxis()
     axes[2].set_title('Residual')
@@ -191,8 +191,6 @@ def train(run_name=None, run_config=None):
                 precip_tensor=None,
                 T_m_lowest=None,
                 T_s=None,
-                P_daily=None,
-                T_daily=None,
                 melt_factor=None,
                 smb_method='field',
                 smb_field=smb_true
@@ -202,11 +200,12 @@ def train(run_name=None, run_config=None):
 
     # Initialize SMB for optimization
     SMB_inverted = torch.full_like(smb_true, 0.0, device=device)
+    # SMB_inverted = torch.load('data/smb_initial.pt', map_location=device)
     SMB_inverted.requires_grad = True
 
 
     # Optimizer
-    optimizer = torch.optim.Adam([SMB_inverted], lr=config.get('learning_rate', 0.01))
+    optimizer = torch.optim.Adam([SMB_inverted], lr=config.get('learning_rate', 0.1))
 
     # Training
     loss_hist, data_hist = [], []
@@ -251,13 +250,14 @@ def train(run_name=None, run_config=None):
             if loss.item() <= 0.00001:
                 print(f"Loss threshold reached at iteration {i+1}")
                 break
-        if (i+1) % 50 == 0:
-            print(f"Iteration {i+1}, Loss: {loss.item():.6f}, RMSE: {metrics['rmse'].item():.4f}, MAE: {metrics['mae'].item():.4f}")
+        print(f"Iteration {i+1}, Loss: {loss.item():.6f}, RMSE: {metrics['rmse'].item():.4f}, MAE: {metrics['mae'].item():.4f}")
+        
+        if (i+1) % 10 == 0:
             plot_3panel_combined(
                 SMB_inverted, smb_true, H_sim, observation, icemask,
                 output_dir / f'combined_iter_{i+1}.png'
             )
-            torch.save(SMB_inverted, output_dir / f'smb_inverted_iter_{i+1}.pt')
+            # torch.save(SMB_inverted, output_dir / f'smb_inverted_iter_{i+1}.pt')
     # Save results
     SMB_inverted = torch.where(icemask > 0.5,
     SMB_inverted,    torch.tensor(-10.0, dtype=SMB_inverted.dtype, device=SMB_inverted.device))
@@ -290,13 +290,13 @@ if __name__ == "__main__":
     os.environ["WANDB_MODE"] = "disabled"  # Disable wandb completely
 
     # Configuration for single run
-    run_name = "rose-sweep-1"
+    run_name = "run_single_1950-2000"
     run_config = {
         'ttot': 2010.0,
-        'learning_rate': 0.01,
+        'learning_rate': 0.05,
         'reg_lambda': 0.0,
-        'max_iters': 451,
-        'early_stop_patience': 250,
+        'max_iters': 500,
+        'early_stop_patience': 10,
         'early_stop_threshold': 0.00001
     }
 

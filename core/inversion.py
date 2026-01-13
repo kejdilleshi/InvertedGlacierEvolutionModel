@@ -17,7 +17,7 @@ def _eval_pair(H: torch.Tensor, obs: torch.Tensor, thickness_thresh: float = 0.5
     # union of glacier extents (obs or sim), then intersect with base mask
     m = ((obs > thickness_thresh) | (H > thickness_thresh))
 
-    resid = (H - obs) # meters
+    resid = (H - obs)[m]# meters
     mse = torch.mean(resid**2) if resid.numel() > 0 else torch.tensor(0.0, device=H.device)
     rmse = torch.sqrt(mse)
     mae = torch.sum(torch.abs(resid)) if resid.numel() > 0 else torch.tensor(11110.0, device=H.device)
@@ -61,8 +61,6 @@ def inversion_thicknes(
         precip_tensor=precip_tensor,
         T_m_lowest=T_m_lowest,
         T_s=T_s,
-        P_daily=P_daily,
-        T_daily=T_daily,
         melt_factor=melt_factor
     )
 
@@ -129,8 +127,6 @@ def inversion_extent(
         precip_tensor=precip_tensor,
         T_m_lowest=T_m_lowest,
         T_s=T_s,
-        P_daily=P_daily,
-        T_daily=T_daily,
         melt_factor=melt_factor
     )
 
@@ -195,109 +191,211 @@ def invert_field(
     smb_field: torch.Tensor,
     observation: torch.Tensor,
     glacier_model,
-    reg_lambda: float = 0.01,
+    save_times: list = None,
+    reg_lambda: float = 0.0,
     thickness_thresh: float = 1.0,
     smooth_type: str = 'gradient',  # 'gradient' or 'laplacian'
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     """
-    Invert for SMB field given a single observation (2D ice thickness field).
+    Invert for SMB field given ice thickness observations.
 
-    This function optimizes an SMB field so that when used in the glacier model,
-    it produces ice thickness that matches the observation.
-
-    Parameters:
-    -----------
+    Parameters
+    ----------
     smb_field : torch.Tensor
-        SMB field to optimize (2D tensor [ny, nx])
-        Should have requires_grad=True for optimization
+        SMB field to optimize (2D or 3D)
     observation : torch.Tensor
-        Observed ice thickness field (2D tensor [ny, nx])
+        Observed ice thickness at final time
     glacier_model : GlacierDynamicsCheckpointed
-        Glacier model instance
+        Glacier dynamics model
+    save_times : list, optional
+        Times at which to save H (if None, only returns final H)
     reg_lambda : float
-        Regularization weight for spatial smoothness (default: 0.01)
+        Regularization weight for spatial smoothness
     thickness_thresh : float
-        Thickness threshold for glacier presence (default: 1.0 m)
+        Threshold for glacier presence in metrics
     smooth_type : str
-        Type of smoothness regularization:
-        - 'gradient': penalize spatial gradients (total variation)
-        - 'laplacian': penalize curvature (second derivatives)
+        Type of smoothness regularization ('gradient' or 'laplacian')
 
-    Returns:
-    --------
+    Returns
+    -------
     H_sim : torch.Tensor
-        Simulated ice thickness field (2D tensor [ny, nx])
+        Simulated ice thickness at final time
     loss : torch.Tensor
-        Total loss (data term + regularization)
+        Total loss (data + regularization)
     data_term : torch.Tensor
         Data fidelity term only
     metrics : dict
-        Dictionary with diagnostic metrics (mse, rmse, mae, bias, std, area)
-
-    Notes:
-    ------
-    - The SMB field should be initialized before calling this function
-    - Spatial smoothness regularization encourages neighboring SMB values to be similar
-    - Use this in an optimization loop, updating smb_field with gradient descent
-
-    Example:
-    --------
-    >>> # Initialize SMB field
-    >>> smb_field = torch.zeros(ny, nx, device=device, requires_grad=True)
-    >>> optimizer = torch.optim.Adam([smb_field], lr=0.01)
-    >>>
-    >>> # Optimization loop
-    >>> for i in range(100):
-    >>>     optimizer.zero_grad()
-    >>>     H_sim, loss, data, metrics = invert_field(
-    >>>         smb_field, observation, glacier_model, reg_lambda=0.01
-    >>>     )
-    >>>     loss.backward()
-    >>>     optimizer.step()
+        Evaluation metrics (mse, rmse, mae, bias, std, area)
     """
 
-    # ---- Forward simulation using the SMB field ----
-    H_sim = glacier_model(
-        precip_tensor=None,
-        T_m_lowest=None,
-        T_s=None,
-        P_daily=None,
-        T_daily=None,
-        melt_factor=None,
-        smb_method='field',
-        smb_field=smb_field
-    )
+    # ---- Forward simulation ----
+    if save_times is not None:
+        saved_H_dict, H_sim = glacier_model(
+            precip_tensor=None,
+            T_m_lowest=None,
+            T_s=None,
+            melt_factor=None,
+            smb_method='field',
+            smb_field=smb_field,
+            save_times=save_times,
+        )
+    else:
+        H_sim = glacier_model(
+            precip_tensor=None,
+            T_m_lowest=None,
+            T_s=None,
+            melt_factor=None,
+            smb_method='field',
+            smb_field=smb_field,
+        )
 
     # ---- Compute data fidelity (masked misfit) ----
     metrics = _eval_pair(H_sim, observation, thickness_thresh)
     data_term = metrics["mse"]
 
     # ---- Spatial smoothness regularization ----
-    if smooth_type == 'gradient':
-        # Total variation-like: penalize gradients in x and y directions
-        # This encourages spatially smooth SMB fields
-        grad_x = smb_field[:, 1:] - smb_field[:, :-1]  # differences in x
-        grad_y = smb_field[1:, :] - smb_field[:-1, :]  # differences in y
-        smoothness = torch.sum(grad_x**2) + torch.sum(grad_y**2)
+    if reg_lambda > 0:
+        # For 3D SMB fields [time, ny, nx], apply smoothness only to the last slice (the one being inverted)
+        # For 2D SMB fields [ny, nx], apply smoothness to the entire field
+        if smb_field.ndim == 3:
+            # 3D case: use last time slice
+            smb_slice = smb_field[-1, :, :]
+        elif smb_field.ndim == 2:
+            # 2D case: use entire field
+            smb_slice = smb_field
+        else:
+            raise ValueError(f"smb_field must be 2D or 3D, got shape {smb_field.shape}")
 
-    elif smooth_type == 'laplacian':
-        # Laplacian regularization: penalize curvature (second derivatives)
-        # This encourages even smoother fields
-        # Compute discrete Laplacian: ∇²u ≈ u[i-1,j] + u[i+1,j] + u[i,j-1] + u[i,j+1] - 4*u[i,j]
-        laplacian = (
-            smb_field[:-2, 1:-1] +  # above
-            smb_field[2:, 1:-1] +   # below
-            smb_field[1:-1, :-2] +  # left
-            smb_field[1:-1, 2:] -   # right
-            4 * smb_field[1:-1, 1:-1]  # center
-        )
-        smoothness = torch.sum(laplacian**2)
+        if smooth_type == 'gradient':
+            # Total variation-like: penalize gradients in x and y directions
+            # This encourages spatially smooth SMB fields
+            grad_x = smb_slice[:, 1:] - smb_slice[:, :-1]  # differences in x
+            grad_y = smb_slice[1:, :] - smb_slice[:-1, :]  # differences in y
+            smoothness = torch.sum(grad_x**2) + torch.sum(grad_y**2)
 
+        elif smooth_type == 'laplacian':
+            # Laplacian regularization: penalize curvature (second derivatives)
+            # This encourages even smoother fields
+            # Compute discrete Laplacian: ∇²u ≈ u[i-1,j] + u[i+1,j] + u[i,j-1] + u[i,j+1] - 4*u[i,j]
+            laplacian = (
+                smb_slice[:-2, 1:-1] +  # above
+                smb_slice[2:, 1:-1] +   # below
+                smb_slice[1:-1, :-2] +  # left
+                smb_slice[1:-1, 2:] -   # right
+                4 * smb_slice[1:-1, 1:-1]  # center
+            )
+            smoothness = torch.sum(laplacian**2)
+
+        else:
+            raise ValueError(f"smooth_type must be 'gradient' or 'laplacian', got '{smooth_type}'")
+
+        # ---- Total loss ----
+        loss = data_term + reg_lambda * smoothness
     else:
-        raise ValueError(f"smooth_type must be 'gradient' or 'laplacian', got '{smooth_type}'")
+        loss = data_term
 
-    # ---- Total loss ----
-    loss = data_term + reg_lambda * smoothness
+    return H_sim, loss, data_term, metrics
+
+
+def invert_profile(
+    smb_vec: torch.Tensor,
+    z_min: torch.Tensor | float,
+    dz: torch.Tensor | float,
+    observation: torch.Tensor,
+    glacier_model,
+    save_times: list = None,
+    reg_lambda: float = 0.0,
+    thickness_thresh: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Invert for SMB elevation profile given ice thickness observations.
+
+    This function optimizes a 1D SMB profile smb(z) that is mapped to 2D topography
+    using piecewise-linear interpolation. This is fully differentiable and suitable
+    for gradient-based optimization.
+
+    Parameters
+    ----------
+    smb_vec : torch.Tensor
+        1D SMB elevation profile to optimize, shape [N]
+        where N is the number of elevation bins
+    z_min : torch.Tensor or float
+        Minimum elevation (m) corresponding to smb_vec[0]
+    dz : torch.Tensor or float
+        Elevation spacing (m) between consecutive smb_vec values
+    observation : torch.Tensor
+        Observed ice thickness at final time [ny, nx]
+    glacier_model : GlacierDynamicsCheckpointed
+        Glacier dynamics model
+    save_times : list, optional
+        Times at which to save H (if None, only returns final H)
+    reg_lambda : float
+        Regularization weight for smoothness of SMB profile
+        Penalizes second derivatives (curvature) to encourage smooth profiles
+    thickness_thresh : float
+        Threshold for glacier presence in metrics
+
+    Returns
+    -------
+    H_sim : torch.Tensor
+        Simulated ice thickness at final time
+    loss : torch.Tensor
+        Total loss (data + regularization)
+    data_term : torch.Tensor
+        Data fidelity term only
+    metrics : dict
+        Evaluation metrics (mse, rmse, mae, bias, std, area)
+
+    Notes
+    -----
+    - The SMB profile smb_vec is a 1D vector representing SMB values at discrete
+      elevations: z = z_min + k*dz for k=0,1,...,N-1
+    - Regularization penalizes the second derivative (curvature) of the profile
+      to encourage physically plausible, smooth SMB profiles
+    - All operations are AD-friendly for gradient-based optimization
+    """
+
+    # ---- Forward simulation ----
+    if save_times is not None:
+        saved_H_dict, H_sim = glacier_model(
+            precip_tensor=None,
+            T_m_lowest=None,
+            T_s=None,
+            melt_factor=None,
+            smb_method='profile',
+            smb_vec=smb_vec,
+            z_min=z_min,
+            dz=dz,
+            save_times=save_times,
+        )
+    else:
+        H_sim = glacier_model(
+            precip_tensor=None,
+            T_m_lowest=None,
+            T_s=None,
+            melt_factor=None,
+            smb_method='profile',
+            smb_vec=smb_vec,
+            z_min=z_min,
+            dz=dz,
+        )
+
+    # ---- Compute data fidelity (masked misfit) ----
+    metrics = _eval_pair(H_sim, observation, thickness_thresh)
+    data_term = metrics["mse"]
+
+    # ---- Smoothness regularization for 1D profile ----
+    if reg_lambda > 0:
+        # Penalize second derivative (curvature) of SMB profile
+        # This encourages smooth, physically plausible profiles
+        # Second derivative approximation: smb''[i] ≈ smb[i-1] - 2*smb[i] + smb[i+1]
+        second_deriv = smb_vec[:-2] - 2*smb_vec[1:-1] + smb_vec[2:]
+        smoothness = torch.sum(second_deriv**2)
+
+        # ---- Total loss ----
+        loss = data_term + reg_lambda * smoothness
+    else:
+        loss = data_term
 
     return H_sim, loss, data_term, metrics
 

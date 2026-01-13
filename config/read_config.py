@@ -8,6 +8,7 @@ def parse_arguments(arg_list=None):
     parser.add_argument('--ttot', type=float, default=2017.0, help='Time limit (yr)')
     parser.add_argument('--t_start', type=float, default=1700.0, help='Start time (yr)')
     parser.add_argument('--dtmax', type=float, default=1.0, help='Maximum timestep (yr)')
+    parser.add_argument('--cfl', type=float, default=0.2, help='CFL condition for numerical stability')
     parser.add_argument('--initial_mean_temp', type=float, default=7, help='Initial mean temperature (°C)')
     parser.add_argument('--initial_precip', type=float, default=0.2, help='Initial precipitation (m/yr)')
     parser.add_argument('--learning_rate', type=float, default=0.05, help='Learning rate')

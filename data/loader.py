@@ -1,6 +1,6 @@
 import torch
 import netCDF4
-from utils.gpu_monitor import device
+from core.utils import device
 
 def load_geology(path_nc):
     nc = netCDF4.Dataset(path_nc)

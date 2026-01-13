@@ -136,10 +136,79 @@ def update_smb_ELA(
     # Convert inputs to tensors on the same device/dtype as Z_topo
     ELA = torch.as_tensor(ELA, dtype=dtype, device=device)
     grad_b = torch.as_tensor(grad_b, dtype=dtype, device=device)
-    b_max = torch.as_tensor(b_max, dtype=dtype, device=device)
+    # b_max = torch.as_tensor(b_max, dtype=dtype, device=device)
 
     # Compute SMB: grad_b * (Z - ELA), capped at b_max
-    smb = torch.minimum(grad_b * (Z_topo - ELA), b_max)
+    # smb = torch.minimum(grad_b * (Z_topo - ELA), b_max)
+    smb = grad_b * (Z_topo - ELA)
+
+    return smb
+
+
+def update_smb_profile(
+    Z_topo: Tensor,
+    smb_vec: Tensor,
+    z_min: Tensor | float,
+    dz: Tensor | float,
+) -> Tensor:
+    """
+    Compute SMB (m ice eq / year) from an elevation-based profile using
+    piecewise-linear (triangular hat basis) interpolation.
+
+    This method maps a 1D SMB profile smb(z) to the 2D topography SMB(x,y)
+    by interpolating based on elevation. The interpolation is AD-friendly
+    and mask-free.
+
+    Parameters:
+    -----------
+    Z_topo : Tensor
+        Surface elevation (m), shape (H, W) or (..., H, W)
+    smb_vec : Tensor
+        1D SMB profile values (m ice eq / year) at discrete elevations.
+        Shape (N,) where N is the number of elevation bins.
+        smb_vec[i] corresponds to elevation z_min + i * dz
+    z_min : Tensor or float
+        Minimum elevation (m) corresponding to smb_vec[0]
+    dz : Tensor or float
+        Elevation spacing (m) between consecutive smb_vec values
+
+    Returns:
+    --------
+    smb : Tensor
+        Surface mass balance in m ice eq per year (same shape as Z_topo)
+
+    Example:
+    --------
+    >>> # Create SMB profile from -15 to 5 m/yr over elevation range
+    >>> zmin = topo.min()
+    >>> zmax = topo.max()
+    >>> dz = 100.0  # 100m bins
+    >>> N = int(torch.ceil((zmax - zmin) / dz).item())
+    >>> smb_vec = torch.linspace(-15.0, 5.0, steps=N, device=device)
+    >>> smb_2d = update_smb_profile(topo, smb_vec, zmin, dz)
+    """
+    device = Z_topo.device
+    dtype = Z_topo.dtype
+
+    # Convert inputs to tensors on the same device/dtype as Z_topo
+    smb_vec = torch.as_tensor(smb_vec, dtype=dtype, device=device)
+    z_min = torch.as_tensor(z_min, dtype=dtype, device=device)
+    dz = torch.as_tensor(dz, dtype=dtype, device=device)
+
+    # Compute continuous index coordinate
+    t = (Z_topo - z_min) / dz
+
+    # Create index array for all SMB values
+    N = smb_vec.shape[0]
+    k = torch.arange(N, device=device, dtype=dtype)
+
+    # Compute triangular (hat) basis weights
+    # Each point has non-zero weight for the two nearest elevation bins
+    # Weight = relu(1 - |t - k|), which is 1 at exact bin and 0 beyond ±1 bin
+    w = torch.relu(1.0 - torch.abs(t[..., None] - k))
+
+    # Weighted sum over all elevation bins
+    smb = torch.sum(w * smb_vec, dim=-1)
 
     return smb
 

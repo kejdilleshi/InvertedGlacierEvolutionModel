@@ -1,4 +1,4 @@
-from core.smb import update_smb_PDD, update_smb_ELA, cosine_temperature_series
+from core.smb import update_smb_PDD, update_smb_ELA, update_smb_profile, cosine_temperature_series
 from visualization.plots import visualize, visualize_velocities,plot_thickness_divflux_velocities
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -44,23 +44,26 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
         self.dx = args.dx
         self.dy = args.dy
         self.dtmax = args.dtmax
+        self.cfl = args.cfl
         self.vis_freq = args.vis_freq
+        self.forward_scheme = getattr(args, 'forward_scheme', 'emulator')  # Default to emulator if not specified
 
     
 
-    def forward(self, precip_tensor, T_m_lowest, T_s, P_daily, T_daily, melt_factor,
-                smb_method='PDD', ELA=None, grad_b=None, b_max=None, smb_field=None):
+    def forward(self, precip_tensor, T_m_lowest, T_s, melt_factor,
+                smb_method='PDD', ELA=None, grad_b=None, b_max=None, smb_field=None,
+                smb_vec=None, z_min=None, dz=None, save_times=None, forward_scheme=None):
         return self.solve_glacier_dynamics(
             self.Z_topo, self.ttot, self.t_start, precip_tensor, T_m_lowest, T_s,
-            P_daily, T_daily, melt_factor, smb_method, ELA, grad_b, b_max, smb_field
+            melt_factor, smb_method, ELA, grad_b, b_max, smb_field, smb_vec, z_min, dz, save_times, forward_scheme
         )    
 
 
     def solve_glacier_dynamics(self, Z_topo, ttot, time, precip_tensor, T_m_lowest, T_s,
-                              P_daily, T_daily, melt_factor, smb_method='PDD',
-                              ELA=None, grad_b=None, b_max=None, smb_field=None):
-        ny, nx = Z_topo.shape
-        # H_ice = torch.zeros((ny, nx), device=self.device)
+                              melt_factor, smb_method='PDD',
+                              ELA=None, grad_b=None, b_max=None, smb_field=None,
+                              smb_vec=None, z_min=None, dz=None, save_times=None, forward_scheme=None):
+
         H_ice=self.H_init
 
         Z_surf = Z_topo + H_ice
@@ -72,9 +75,16 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
         # initial smb
         idx=0
 
+        # Determine forward scheme (use parameter if provided, else use instance default)
+        scheme = forward_scheme if forward_scheme is not None else self.forward_scheme
+
+        # Validate forward scheme choice
+        if scheme not in ['SIA', 'emulator']:
+            raise ValueError(f"forward_scheme must be 'SIA' or 'emulator', got '{scheme}'")
+
         # Validate SMB method choice
-        if smb_method not in ['PDD', 'ELA', 'field']:
-            raise ValueError(f"smb_method must be 'PDD', 'ELA', or 'field', got '{smb_method}'")
+        if smb_method not in ['PDD', 'ELA', 'field', 'profile']:
+            raise ValueError(f"smb_method must be 'PDD', 'ELA', 'field', or 'profile', got '{smb_method}'")
 
         # Handle both scalar and array for time-varying parameters
         if smb_method == 'PDD':
@@ -108,6 +118,26 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
                 is_constant_smb = False
             else:
                 raise ValueError(f"smb_field must be 2D [ny, nx] or 3D [time, ny, nx], got shape {smb_field.shape}")
+        elif smb_method == 'profile':
+            # Validate SMB profile parameters
+            if smb_vec is None or z_min is None or dz is None:
+                raise ValueError("'profile' method requires 'smb_vec', 'z_min', and 'dz' parameters")
+            # Convert to tensors if not already
+            if not isinstance(smb_vec, torch.Tensor):
+                smb_vec = torch.tensor(smb_vec, device=self.device)
+            if not isinstance(z_min, torch.Tensor):
+                z_min = torch.tensor(z_min, device=self.device)
+            if not isinstance(dz, torch.Tensor):
+                dz = torch.tensor(dz, device=self.device)
+            # Check if smb_vec is time-varying (2D: [time, N]) or constant (1D: [N])
+            if smb_vec.ndim == 1:
+                # Constant SMB profile
+                is_constant_profile = True
+            elif smb_vec.ndim == 2:
+                # Time-varying SMB profile
+                is_constant_profile = False
+            else:
+                raise ValueError(f"smb_vec must be 1D [N] or 2D [time, N], got shape {smb_vec.shape}")
 
     
         # Compute initial SMB based on chosen method
@@ -117,47 +147,49 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
         elif smb_method == 'ELA':
             ELA_current = ELA if is_scalar_ELA else ELA[idx]
             smb = update_smb_ELA(Z_surf, ELA_current, grad_b, b_max) * self.ice_mask
-        else:  # field method
+        elif smb_method == 'field':
             if is_constant_smb:
                 smb = smb_field * self.ice_mask
             else:
                 smb = smb_field[idx] * self.ice_mask
+        else:  # profile method
+            if is_constant_profile:
+                smb = update_smb_profile(Z_surf, smb_vec, z_min, dz) * self.ice_mask
+            else:
+                smb = update_smb_profile(Z_surf, smb_vec[idx], z_min, dz) * self.ice_mask
         smb = torch.where((smb < 0) | (self.ice_mask > 0.5), smb, torch.tensor(-10.0, device=self.device))
 
-        H_ice_1880 = None  # store H_ice at 3/4 * ttot
-        H_ice_1926 = None  # store H_ice at 3/4 * ttot
-        H_ice_1957 = None  # store H_ice at 3/4 * ttot
-        H_ice_1980 = None  # store H_ice at 3/4 * ttot
-        H_ice_1999 = None  # store H_ice at 3/4 * ttot
-        H_ice_2009 = None  # store H_ice at 3/4 * ttot
+        # Initialize dictionary to store H at specific times
+        saved_H = {}
+        if save_times is not None:
+            for t in save_times:
+                saved_H[t] = None
 
-        while time < ttot:           
-            
-            # H_ice, Z_surf, time = checkpointed_SIA_step(
-            #                             H_ice, Z_surf, smb, time, 
-            #                             self.Z_topo, self.dx, self.dy, self.dtmax, 
-            #                             self.rho, self.g, self.fd, self.device
-            #                         )
-            H_ice, Z_surf, time, ubar, vbar = checkpoint(
-                                        checkpointed_emulator_step, 
-                                        H_ice, Z_surf, smb, time, 
-                                        self.Z_topo, self.dx, self.dy, self.dtmax, 
-                                        self.model,
-                                        0.05
-                                    )
-            # # store H_ice when time 
-            # if (H_ice_1880 is None) and (time >= 1880):
-            #     H_ice_1880 = H_ice.clone()
-            # if (H_ice_1926 is None) and (time >= 1926):
-            #     H_ice_1926 = H_ice.clone()
-            # if (H_ice_1957 is None) and (time >= 1957):
-            #     H_ice_1957 = H_ice.clone()
-            # if (H_ice_1980 is None) and (time >= 1980):   
-            #     H_ice_1980 = H_ice.clone()
-            # if (H_ice_1999 is None) and (time >= 1999):
-            #     H_ice_1999 = H_ice.clone()
-            # if (H_ice_2009 is None) and (time >= 2009):
-            #     H_ice_2009 = H_ice.clone()
+        while time < ttot:
+
+            if scheme == 'SIA':
+                H_ice, Z_surf, time = checkpoint(checkpointed_SIA_step,
+                                            H_ice, Z_surf, smb, time,
+                                            self.Z_topo, self.dx, self.dy, self.dtmax,
+                                            self.rho, self.g, self.fd, self.cfl, self.device
+                                        )
+                # Initialize dummy velocities for visualization compatibility
+                ubar = torch.zeros_like(H_ice)
+                vbar = torch.zeros_like(H_ice)
+            elif scheme == 'emulator':
+                H_ice, Z_surf, time, ubar, vbar = checkpoint(
+                                            checkpointed_emulator_step,
+                                            H_ice, Z_surf, smb, time,
+                                            self.Z_topo, self.dx, self.dy, self.dtmax,
+                                            self.model,
+                                            self.cfl
+                                        )
+
+            # Store H_ice at specified times
+            if save_times is not None:
+                for t in save_times:
+                    if saved_H[t] is None and time >= t:
+                        saved_H[t] = H_ice.clone()
 
             it += 1
             # print(f"Time: {time.item():.2f} years, Time step: {it.item()}")
@@ -171,11 +203,16 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
                 elif smb_method == 'ELA':
                     ELA_current = ELA if is_scalar_ELA else ELA[idx]
                     smb = update_smb_ELA(Z_surf, ELA_current, grad_b, b_max) * self.ice_mask
-                else:  # field method
+                elif smb_method == 'field':
                     if is_constant_smb:
                         smb = smb_field * self.ice_mask
                     else:
                         smb = smb_field[idx] * self.ice_mask
+                else:  # profile method
+                    if is_constant_profile:
+                        smb = update_smb_profile(Z_surf, smb_vec, z_min, dz) * self.ice_mask
+                    else:
+                        smb = update_smb_profile(Z_surf, smb_vec[idx], z_min, dz) * self.ice_mask
                 smb = torch.where((smb < 0) | (self.ice_mask > 0.5), smb,
                                   torch.tensor(-10.0, device=self.device))
                 t_last_update = time.clone()
@@ -183,8 +220,10 @@ class GlacierDynamicsCheckpointed(torch.nn.Module):
                 if self.visualize:
                     # visualize_velocities(ubar.detach(), vbar.detach(),H_ice.detach(), smb.detach(), time)
                     plot_thickness_divflux_velocities(H_ice, ubar, vbar, dx=100, dy=100, time=time)
-        # return H_ice_1880, H_ice_1926,H_ice_1957,H_ice_1980,H_ice_1999, H_ice_2009, H_ice  
-        # torch.save(smb, 'data/smb_initial.pt')
-        # print(f"Number of time steps: {it.item()}")
-        return H_ice  
+              
+        # Return results based on whether we're saving intermediate times
+        if save_times is not None:
+            return saved_H, H_ice
+        else:
+            return H_ice  
     

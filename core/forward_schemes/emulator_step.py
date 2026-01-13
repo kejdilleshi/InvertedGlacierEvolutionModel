@@ -2,12 +2,24 @@
 import torch
 from config.scaling_factors import scaling_factors
 from utils.emulator_tools import compute_divflux, compute_gradient, apply_boundary_condition,compute_divflux_limited
+import torch.nn.functional as F
 
-def checkpointed_emulator_step(H_ice, Z_surf, smb, time, Z_topo, dx, dy, dtmax,model, cfl=0.20):
+def checkpointed_emulator_step(H_ice, Z_surf, smb, time, Z_topo, dx, dy, dtmax,model, cfl):
     # Compute initial gradients of surface elevation (slopes)
     slopsurfx, slopsurfy = compute_gradient(Z_surf, dx, dy)
     # Scale the inputs with stored scaling factors
-    H_ice_scaled = H_ice / scaling_factors["thk"]
+        #smothed_divflux has the same shape as divflux but uses no padding
+    sm = F.avg_pool2d(H_ice.unsqueeze(0).unsqueeze(0),
+                      kernel_size=2, stride=1, padding=0)
+
+    # resize to original H x W
+    smothed_Hice = F.interpolate(
+        sm,
+        size=H_ice.shape,
+        mode='bilinear',
+        align_corners=False
+    ).squeeze()
+    H_ice_scaled = smothed_Hice / scaling_factors["thk"]
     slopsurfx_scaled = slopsurfx / scaling_factors["slopsurfx"]
     slopsurfy_scaled = slopsurfy / scaling_factors["slopsurfy"]
     # Combine scaled inputs and add batch dimension
@@ -22,7 +34,7 @@ def checkpointed_emulator_step(H_ice, Z_surf, smb, time, Z_topo, dx, dy, dtmax,m
     # Compute time step (CFL condition)
     dt = min(cfl * dx / vel_max, dtmax)
     # Update rule (diffusion): Compute the change in thickness (dH/dt)
-    dHdt = -compute_divflux(ubar, vbar, H_ice, dx, dy)
+    dHdt = -compute_divflux_limited(ubar, vbar, H_ice, dx, dy, dt)
     # Update ice thickness and ensure no negative values
     H_ice = H_ice.clone()
     H_ice += dt * dHdt

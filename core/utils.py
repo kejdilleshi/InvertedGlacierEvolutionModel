@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable, Dict, Any, Union, List
 import os
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 print(f"You are working on {device} device")
 # GPU utilities
 def print_peak_gpu_memory():
