@@ -7,8 +7,9 @@ which maps a 1D elevation-based SMB profile to a 2D topography.
 
 import torch
 import netCDF4
-from core.glacier import GlacierDynamicsCheckpointed
 from config.read_config import parse_arguments
+from core.emulator import load_emulator
+from core.glacier import GlacierDynamicsCheckpointed
 
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -58,13 +59,16 @@ args = parse_arguments()
 H_init = torch.zeros_like(topo)  # Initial ice thickness
 ice_mask = torch.ones_like(topo)  # Ice mask (1 where ice can exist)
 
+# The 'igm' scheme needs an emulator; 'SIA' does not.
+emulator = load_emulator(args.emulator_path, device=device)
+
 glacier = GlacierDynamicsCheckpointed(
     Z_topo=topo,
     H_init=H_init,
     ice_mask=ice_mask,
     device=device,
     args=args,
-    model=None,  # Or provide emulator model if using emulator scheme
+    emulator=emulator,
     visualize=False
 )
 
@@ -82,7 +86,7 @@ H_final_constant = glacier.forward(
     smb_vec=smb_vec,       # 1D profile [N]
     z_min=zmin,            # Minimum elevation
     dz=dz,                 # Elevation spacing
-    forward_scheme='emulator'  # or 'SIA'
+    forward_scheme='igm'  # or 'SIA'
 )
 
 # Example 2: Time-varying SMB profile (2D smb_vec)
@@ -95,7 +99,7 @@ H_final_varying = glacier.forward(
     smb_vec=smb_vec_time_varying,  # 2D profile [time, N]
     z_min=zmin,
     dz=dz,
-    forward_scheme='emulator'
+    forward_scheme='igm'
 )
 
 print(f"Final ice thickness range (constant profile): {H_final_constant.min():.2f} to {H_final_constant.max():.2f} m")

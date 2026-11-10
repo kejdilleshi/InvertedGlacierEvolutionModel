@@ -19,6 +19,43 @@ def parse_arguments(arg_list=None):
     parser.add_argument('--dx', type=int, default=100, help='Grid resolution in x direction (m)')
     parser.add_argument('--dy', type=int, default=100, help='Grid resolution in y direction (m)')
     parser.add_argument('--vis_freq', type=float, default=10.0, help='Visualization frequency (yr)')
+
+    # --- Forward scheme and IGM ice-flow emulator ---
+    parser.add_argument('--forward_scheme', type=str, default='igm',
+                        choices=['SIA', 'igm'],
+                        help="Ice dynamics: 'SIA' (shallow ice, internal deformation "
+                             "only, no sliding) or 'igm' (IGM emulator, Weertman sliding)")
+    parser.add_argument('--emulator_path', type=str,
+                        default='emulators/SIADecompNet_18x80_dil1-32',
+                        help='IGM emulator artifact directory (manifest.yaml + export/)')
+    parser.add_argument('--tau_ref', type=float, default=0.2154,
+                        help='Weertman reference basal shear stress (MPa). Lower means '
+                             'easier sliding, hence faster flow. Used by the igm scheme')
+    parser.add_argument('--arrhenius', type=float, default=78.0,
+                        help="Glen's flow-law (Arrhenius) factor, MPa^-3 yr^-1")
+    parser.add_argument('--max_velbar', type=float, default=0.0,
+                        help="Cap on depth-averaged speed (m/yr); 0 disables. IGM's "
+                             'force_max_velbar. Worth setting on DEM-derived geometry, '
+                             'where margin cliffs spike the velocity and throttle the CFL step')
+    parser.add_argument('--emulator_grad', action='store_true', default=True,
+                        help='Backpropagate through the IGM emulator (default)')
+    parser.add_argument('--no_emulator_grad', dest='emulator_grad', action='store_false',
+                        help='Treat the velocity field as frozen within each step')
+    # --- long runs (see GlacierDynamicsCheckpointed) ---
+    parser.add_argument('--z_ref', type=float, default=None,
+                        help='Elevation (m) the PDD temperature control refers to; '
+                             'default: min(ice surface), a moving datum')
+    parser.add_argument('--smb_freq', type=float, default=None,
+                        help='Years between SMB updates; when set the control is '
+                             'interpolated linearly between nodes every vis_freq years')
+    parser.add_argument('--chunk_steps', type=int, default=0,
+                        help='>0: checkpoint the run in blocks of this many time steps, '
+                             'so memory no longer grows with the run length')
+    parser.add_argument('--precip_cc', type=float, default=None,
+                        help='Clausius-Clapeyron scaling of precipitation with the control '
+                             'temperature, fraction per deg C (e.g. 0.07); needs --precip_T_ref')
+    parser.add_argument('--precip_T_ref', type=float, default=None,
+                        help='Control temperature at which the given precipitation applies')
     parser.add_argument('--outdir', type=str, default='./results/run1', help='Output directory')
 
     if arg_list is None:

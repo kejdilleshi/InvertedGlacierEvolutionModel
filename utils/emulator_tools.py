@@ -22,20 +22,6 @@ def compute_divflux(u, v, h, dx, dy):
     return divflux
 
 
-# Define PyTorch version of compute_gradient
-def compute_gradient(s, dx, dy):
-    """
-    Compute spatial 2D gradient of a given field.
-    """
-    EX = torch.cat([1.5 * s[:, :1] - 0.5 * s[:, 1:2], 0.5 * (s[:, :-1] + s[:, 1:]), 1.5 * s[:, -1:] - 0.5 * s[:, -2:-1]], dim=1)
-    diffx = (EX[:, 1:] - EX[:, :-1]) / dx
-
-    EY = torch.cat([1.5 * s[:1, :] - 0.5 * s[1:2, :], 0.5 * (s[:-1, :] + s[1:, :]), 1.5 * s[-1:, :] - 0.5 * s[-2:-1, :]], dim=0)
-    diffy = (EY[1:, :] - EY[:-1, :]) / dy
-
-    return diffx, diffy
-
-
 # Apply boundary condition in PyTorch
 def apply_boundary_condition(H_ice, boundary_width=5):
     """

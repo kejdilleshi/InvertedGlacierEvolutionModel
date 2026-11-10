@@ -2,13 +2,23 @@ import torch
 from torch import Tensor
 from typing import Union
 
+# Lapse rate of apply_lapse_rate (C/m). A module constant so a sensitivity run can
+# change it (tools/sensitivity_argentiere.py).
+LAPSE_RATE = 7.0 / 1000.0
 
-def apply_lapse_rate(topography, T_m_lowest):
-    lapse_rate = 7.0 / 1000.0  # 7°C/km
-    min_altitude = torch.min(topography)
+
+def apply_lapse_rate(topography, T_m_lowest, z_ref=None):
+    """Mean annual temperature field from a 7 C/km lapse rate (:data:`LAPSE_RATE`).
+
+    ``T_m_lowest`` is the temperature at ``z_ref`` (m). With ``z_ref=None`` the
+    datum is ``min(topography)`` -- the lowest *ice-surface* cell passed in, which
+    moves whenever the lowest cell gains or loses ice; pass a fixed ``z_ref`` to
+    make the control a temperature at a known elevation.
+    """
+    min_altitude = torch.min(topography) if z_ref is None else z_ref
     delta_alt = topography - min_altitude
 
-    T_m = T_m_lowest - lapse_rate * delta_alt
+    T_m = T_m_lowest - LAPSE_RATE * delta_alt
     
     return T_m
 
@@ -43,8 +53,14 @@ def smooth_piecewise(x: Tensor, w: float = 0.1, eps: float = 1e-6) -> Tensor:
     left_p  = (x + 1.0 + w) / (2.0 * w)         # (-1-w , -1+w)
     right_p = (x - (1.0 - w)) / (2.0 * w)       # ( 1-w ,  1+w)
 
+    # Both polynomials are written off the saturated values, so |y| can never
+    # reach 1 exactly. That matters: acos(y) and sqrt(1 - y**2) below both have
+    # an infinite derivative at |y| = 1, and the old right branch, which
+    # expanded to 1 - w*(1 - right_p)**2, hit exactly 1.0 in float32 for
+    # right_p close to 1 -- an inf in the adjoint wherever T_m/T_s landed just
+    # short of 1 + w. The left branch was already safe by construction.
     left_poly  = mone + w * left_p.square()
-    right_poly = (-w) * right_p.square() + 2.0*w*right_p + (1.0 - w)
+    right_poly = one  - w * (1.0 - right_p).square()
 
     y = torch.where(x <= -1.0 - w, mone,
          torch.where(x >=  1.0 + w,  one,

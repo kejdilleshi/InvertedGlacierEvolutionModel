@@ -471,3 +471,180 @@ def plot_sim_obs_extents(
 
     fig.savefig(os.path.join(args.outdir,f"Figs/extent_{iter}.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_thickness_comparison(H_sim, observation, title=None, savepath=None):
+    """Observed / simulated / difference thickness, side by side.
+
+    Replaces the copy of this function that used to be pasted into each
+    inversion notebook.
+    """
+    H_sim_np = H_sim.to(torch.float32).detach().cpu().numpy()
+    obs_np = observation.to(torch.float32).detach().cpu().numpy()
+    diff_np = H_sim_np - obs_np
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    limit = np.nanmax(np.abs(diff_np)) or 1.0
+
+    panels = [
+        (obs_np, 'Observed thickness', 'viridis', dict(vmin=0), 'Thickness (m)'),
+        (H_sim_np, 'Simulated thickness', 'viridis', dict(vmin=0), 'Thickness (m)'),
+        (diff_np, 'Simulated - observed', 'seismic',
+         dict(vmin=-limit, vmax=limit), 'Difference (m)'),
+    ]
+    for ax, (field, name, cmap, kwargs, label) in zip(axes, panels):
+        image = ax.imshow(np.where(np.abs(field) > 0, field, np.nan),
+                          cmap=cmap, origin='lower', **kwargs)
+        ax.set_title(name)
+        ax.set_xlabel('x (pixels)')
+        fig.colorbar(image, ax=ax, label=label)
+    axes[0].set_ylabel('y (pixels)')
+
+    if title:
+        fig.suptitle(title, fontsize=14)
+    plt.tight_layout(rect=[0, 0, 1, 0.96 if title else 1])
+    if savepath:
+        plt.savefig(savepath, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_ela_convergence(loss_history, ela_history, ela_true=None, savepath=None):
+    """Loss and ELA against iteration for an ELA inversion."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    axes[0].plot(loss_history, color='tab:blue')
+    axes[0].set_yscale('log')
+    axes[0].set_xlabel('Iteration')
+    axes[0].set_ylabel('Loss (m$^2$)')
+    axes[0].set_title('Data misfit')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(ela_history, color='tab:blue', label='inverted')
+    if ela_true is not None:
+        axes[1].axhline(y=float(ela_true), color='r', linestyle='--', label='true')
+    axes[1].set_xlabel('Iteration')
+    axes[1].set_ylabel('ELA (m)')
+    axes[1].set_title('Equilibrium line altitude')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if savepath:
+        plt.savefig(savepath, dpi=130, bbox_inches='tight')
+    return fig
+
+
+def plot_evolution(times, thicknesses, speeds, dx=100.0, thickness_thresh=1.0,
+                   title=None, savepath=None):
+    """Snapshots of a run: thickness and depth-averaged speed through time.
+
+    Parameters
+    ----------
+    times : sequence of float
+        Model times of the snapshots (yr).
+    thicknesses, speeds : sequence of torch.Tensor
+        Ice thickness (m) and depth-averaged speed (m/yr), one ``[ny, nx]``
+        field per entry in ``times``.
+    dx : float
+        Grid spacing (m), used to turn thickness into volume and area.
+    thickness_thresh : float
+        Thickness below which a pixel is drawn as bare ground.
+
+    The panels are cropped to the ice's own bounding box, so the glacier fills
+    the frame instead of floating in a mostly empty domain. Colour scales are
+    shared across snapshots so that growth is visible rather than renormalized
+    away at each step; thickness uses a square-root scale so the thin early ice
+    is still legible next to the thick late ice, and the speed scale is set by
+    the 99th percentile, because a single margin pixel can otherwise take the
+    whole colour range.
+    """
+    n = len(times)
+    if not (n == len(thicknesses) == len(speeds)):
+        raise ValueError('times, thicknesses and speeds must be the same length')
+
+    to_np = lambda t: t.to(torch.float32).detach().cpu().numpy()
+    thk = [to_np(t) for t in thicknesses]
+    spd = [to_np(s) for s in speeds]
+    ice = [h > thickness_thresh for h in thk]
+
+    # crop to the union of the ice extents, with a small margin
+    ever = np.any(ice, axis=0)
+    if ever.any():
+        rows, cols = np.where(ever)
+        pad = 4
+        r0, r1 = max(rows.min() - pad, 0), min(rows.max() + pad + 1, ever.shape[0])
+        c0, c1 = max(cols.min() - pad, 0), min(cols.max() + pad + 1, ever.shape[1])
+        box = (slice(r0, r1), slice(c0, c1))
+        thk = [h[box] for h in thk]
+        spd = [s[box] for s in spd]
+        ice = [m[box] for m in ice]
+
+    thk_max = max((h[m].max() if m.any() else 0.0) for h, m in zip(thk, ice)) or 1.0
+    pooled = np.concatenate([s[m] for s, m in zip(spd, ice) if m.any()] or [np.zeros(1)])
+    spd_max = float(np.percentile(pooled, 99)) or 1.0
+
+    height, width = thk[0].shape
+    panel_w = 2.6
+    panel_h = panel_w * height / width
+    # a dedicated last column for the colourbars, so attaching one does not
+    # shrink the final snapshot relative to the others
+    fig = plt.figure(figsize=(panel_w * n + 1.6, 2 * panel_h + 3.4))
+    grid = fig.add_gridspec(3, 2 * n + 1, height_ratios=[panel_h, panel_h, 2.6],
+                            width_ratios=[1.0] * (2 * n) + [0.16],
+                            hspace=0.25, wspace=0.6)
+
+    for column, (time, h, s, m) in enumerate(zip(times, thk, spd, ice)):
+        ax = fig.add_subplot(grid[0, 2 * column:2 * column + 2])
+        im = ax.imshow(np.where(m, h, np.nan), cmap='Blues', origin='lower',
+                       norm=colors.PowerNorm(gamma=0.5, vmin=0, vmax=thk_max))
+        ax.set_title(f't = {time:.0f} yr')
+        ax.set_xticks([]); ax.set_yticks([])
+        if column == 0:
+            ax.set_ylabel('Ice thickness', fontsize=11)
+        if column == n - 1:
+            fig.colorbar(im, cax=fig.add_subplot(grid[0, -1]), label='m')
+
+        ax = fig.add_subplot(grid[1, 2 * column:2 * column + 2])
+        im = ax.imshow(np.where(m, s, np.nan), cmap='magma', origin='lower',
+                       vmin=0, vmax=spd_max)
+        ax.set_xticks([]); ax.set_yticks([])
+        if column == 0:
+            ax.set_ylabel('Depth-averaged speed', fontsize=11)
+        if column == n - 1:
+            fig.colorbar(im, cax=fig.add_subplot(grid[1, -1]), label='m yr$^{-1}$')
+
+    volume = [float(h[h > 0].sum()) * dx * dx / 1e9 for h in thk]
+    area = [float(m.sum()) * dx * dx / 1e6 for m in ice]
+
+    # leave two empty columns between the two series panels so the twin axis
+    # of the left one does not run into the right one
+    ax = fig.add_subplot(grid[2, :n - 1])
+    ax.plot(times, volume, 'o-', color='tab:blue')
+    ax.set_xlabel('Time (yr)')
+    ax.set_ylabel('Volume (km$^3$)', color='tab:blue')
+    ax.tick_params(axis='y', labelcolor='tab:blue')
+    ax.grid(alpha=0.3)
+    twin = ax.twinx()
+    twin.plot(times, area, 's--', color='tab:grey')
+    twin.set_ylabel('Area (km$^2$)', color='tab:grey')
+    twin.tick_params(axis='y', labelcolor='tab:grey')
+    ax.set_title('Volume (solid) and area (dashed)')
+
+    ax = fig.add_subplot(grid[2, n + 1:2 * n])
+    median = [float(np.median(s[m])) if m.any() else 0.0 for s, m in zip(spd, ice)]
+    p90 = [float(np.percentile(s[m], 90)) if m.any() else 0.0 for s, m in zip(spd, ice)]
+    peak = [float(s[m].max()) if m.any() else 0.0 for s, m in zip(spd, ice)]
+    ax.plot(times, median, 'o-', label='median')
+    ax.plot(times, p90, 's-', label='p90')
+    ax.plot(times, peak, '^:', label='max', alpha=0.6)
+    ax.set_xlabel('Time (yr)')
+    ax.set_ylabel('Speed (m yr$^{-1}$)')
+    ax.set_title('Depth-averaged speed on ice')
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+
+    if title:
+        fig.suptitle(title, fontsize=14)
+    if savepath:
+        plt.savefig(savepath, dpi=130, bbox_inches='tight')
+    return fig

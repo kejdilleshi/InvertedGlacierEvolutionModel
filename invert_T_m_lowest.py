@@ -3,7 +3,7 @@ from core.glacier import GlacierDynamicsCheckpointed
 import torch
 from core.inversion import inversion_extent,inversion_thicknes
 from visualization.plots import  plot_loss_components,plot_temp, plot_sim_obs_extents
-from core.cnn_model import CNN
+from core.emulator import load_emulator
 from data.loader import load_geology
 from core.utils import metrics_to_str,iterations_to_jsonl
 import netCDF4
@@ -25,19 +25,8 @@ args.outdir = f"./results/ext_mean_l2_1926_seq_7/{wandb.run.name}"
 os.makedirs(args.outdir, exist_ok=True)
 
 
-config = {
-"nb_layers": 8,               # Number of convolutional layers
-"nb_out_filter": 64,           # Number of output filters for Conv2D
-"conv_ker_size": 5,            # Convolution kernel size
-"activation": "lrelu",          # Activation function: "relu" or "lrelu"
-"dropout_rate": 0.1,           # Dropout rate
-}
-nb_inputs = 3  # thk, slopsurfx, slopsurfy
-nb_outputs = 2  # ubar, vbar
-state = torch.load('data/emulator_model.pth', map_location=device, weights_only=False)
-model = CNN(nb_inputs, nb_outputs, config).to(device)
-model.load_state_dict(state, strict=True)
-model.eval()
+# Load the IGM ice-flow emulator
+emulator = load_emulator(args.emulator_path, device=device)
 
 Z_topo,H_init, icemask = load_geology("data/geology.nc")
 
@@ -63,7 +52,7 @@ obs_17= torch.tensor(nc.variables['surf_2017'][:], device=device) -topo
 nc.close()
 
 glacier_model = GlacierDynamicsCheckpointed(
-        Z_topo,H_init, ice_mask=icemask,device=device,args=args,model=model
+        Z_topo,H_init, ice_mask=icemask,device=device,args=args,emulator=emulator
     )
 m_f_list=[2.7/12]
 

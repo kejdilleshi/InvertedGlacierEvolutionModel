@@ -14,7 +14,7 @@ from pathlib import Path
 
 from core.glacier import GlacierDynamicsCheckpointed
 from core.inversion import invert_field
-from core.cnn_model import CNN
+from core.emulator import load_emulator
 from data.loader import load_geology 
 from config.read_config import parse_arguments
 from visualization.plots import  visualize_velocities,plot_loss_components
@@ -161,18 +161,8 @@ def train(run_name=None, run_config=None):
     args.t_start = torch.tensor(2000.0)
     args.outdir = output_dir
 
-    # Load CNN emulator
-    cnn_config = {
-        "nb_layers": 8,
-        "nb_out_filter": 64,
-        "conv_ker_size": 5,
-        "activation": "lrelu",
-        "dropout_rate": 0.1,
-    }
-    state = torch.load('data/emulator_model.pth', map_location=device, weights_only=False)
-    model = CNN(3, 2, cnn_config).to(device)
-    model.load_state_dict(state, strict=True)
-    model.eval()
+    # Load the IGM ice-flow emulator
+    emulator = load_emulator(args.emulator_path, device=device)
 
     # Load geology
     Z_topo, H_init, icemask = load_geology("data/geology.nc")
@@ -180,7 +170,7 @@ def train(run_name=None, run_config=None):
     # Create glacier model
     glacier_model = GlacierDynamicsCheckpointed(
         Z_topo, H_init, ice_mask=icemask, device=device,
-        args=args, model=model, visualize=False
+        args=args, emulator=emulator, visualize=False
     )
 
     # Load data

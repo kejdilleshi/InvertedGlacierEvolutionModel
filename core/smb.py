@@ -37,6 +37,7 @@ def update_smb_PDD(
     T_daily: Tensor | None = None,                # daily temp (°C), same shape/broadcast as P_daily
     time_dim: int = 0,                            # which axis is time for daily inputs
     positive_degree_threshold_c: float = 1.0,     # your requested >1°C threshold for PDD
+    z_ref: float | None = None,                   # elevation (m) T_m_lowest refers to; None = min(Z_topo)
 ) -> Tensor:
     """
     Compute SMB (m ice eq / year) using Positive Degree Day (PDD) method.
@@ -77,7 +78,7 @@ def update_smb_PDD(
         T_s = torch.as_tensor(T_s, dtype=Z_topo.dtype, device=Z_topo.device)
 
         # Temperature field via lapse-rate
-        T_m = apply_lapse_rate(Z_topo, T_m_lowest)
+        T_m = apply_lapse_rate(Z_topo, T_m_lowest, z_ref=z_ref)
 
         # Accumulation fraction of year with negative temps, times annual precip (water eq)
         neg_ratio = compute_negative_temperature_ratio(T_m, T_s)  # [0,1]

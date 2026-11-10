@@ -8,3 +8,13 @@ results/*
 wandb/*
 visualization/FIGURES/*
 visualization/movie/*
+# Generated run outputs (large; kept locally only)
+results_archive/
+*.log
+# LaTeX build artefacts
+*.aux
+*.out
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+.ipynb_checkpoints/
